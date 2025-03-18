@@ -7,6 +7,12 @@ let popupWindow = null;
 // Set interval to check popup window status
 let popupCheckInterval = null;
 
+// Set timeout for popup initialization
+let popupInitTimeout = null;
+
+// Prevent reopening too frequently
+let lastPopupCreationTime = 0;
+
 /**
  * Open the translations window
  * @param {Function} updateTranslationsDisplay - Function to update translations
@@ -14,187 +20,198 @@ let popupCheckInterval = null;
  */
 function openTranslationsWindow(updateTranslationsDisplay) {
   try {
+    // Prevent reopening too frequently
+    const now = Date.now();
+    if (now - lastPopupCreationTime < 3000) {
+      return popupWindow;
+    }
+    lastPopupCreationTime = now;
+    
+    // Only create new window if needed
     if (!popupWindow || popupWindow.closed) {
-      // Create a new popup window if it doesn't exist or is closed
       popupWindow = window.open("", "TranslatedSubtitles", "width=600,height=500");
-      if (popupWindow) {
-        popupWindow.document.write(`
-          <!DOCTYPE html>
-          <html lang="en">
-          <head>
-            <meta charset="UTF-8" />
-            <meta name="viewport" content="width=device-width, initial-scale=1.0" />
-            <title>Translated Subtitles</title>
-            <style>
-              body {
-                font-family: Arial, sans-serif;
-                padding: 0;
-                margin: 0;
-                height: 100vh;
-                display: flex;
-                flex-direction: column;
-                background-color: #f9f9f9;
-              }
-              header {
-                background-color: #0078d4;
-                color: white;
-                padding: 10px;
-                display: flex;
-                justify-content: space-between;
-                align-items: center;
-              }
-              h2 {
-                margin: 0;
-                font-size: 18px;
-              }
-              .tab-container {
-                display: flex;
-                background: #f0f0f0;
-                border-bottom: 1px solid #ddd;
-              }
-              .tab {
-                padding: 10px 15px;
-                cursor: pointer;
-                border-right: 1px solid #ddd;
-              }
-              .tab.active {
-                background: #fff;
-                font-weight: bold;
-                border-bottom: 2px solid #0078d4;
-              }
-              #main-container {
-                flex-grow: 1;
-                display: flex;
-                flex-direction: column;
-                overflow: hidden;
-              }
-              #subtitles-container {
-                flex-grow: 1;
-                overflow-y: auto;
-                padding: 15px;
-                background-color: white;
-              }
-              #debug-container {
-                flex-grow: 1;
-                overflow-y: auto;
-                padding: 15px;
-                background-color: white;
-                font-family: monospace;
-                font-size: 12px;
-                display: none;
-              }
-              .speaker-block {
-                margin-bottom: 20px;
-                border-left: 3px solid #0078d4;
-                padding-left: 10px;
-              }
-              .speaker-name {
-                font-weight: bold;
-                color: #0078d4;
-                margin-bottom: 5px;
-              }
-              .utterance {
-                margin-bottom: 10px;
-                padding: 10px;
-                background-color: #f9f9f9;
-                border-radius: 5px;
-                border: 1px solid #eee;
-              }
-              .utterance.active {
-                background-color: #f0f7ff;
-                border-color: #0078d4;
-              }
-              .utterance-text {
-                font-size: 15px;
-                line-height: 1.4;
-              }
-              .timestamp {
-                font-size: 11px;
-                color: #888;
-                margin-top: 5px;
-                text-align: right;
-              }
-              .controls {
-                padding: 10px;
-                display: flex;
-                justify-content: space-between;
-                background: white;
-                border-top: 1px solid #ddd;
-              }
-              button {
-                padding: 8px 15px;
-                cursor: pointer;
-                background-color: #0078d4;
-                color: white;
-                border: none;
-                border-radius: 3px;
-                font-weight: bold;
-              }
-              button:hover {
-                background-color: #106ebe;
-              }
-              .debug-entry {
-                color: #666;
-                margin-bottom: 3px;
-              }
-              .badge {
-                display: inline-block;
-                font-size: 11px;
-                padding: 2px 5px;
-                border-radius: 3px;
-                margin-left: 5px;
-                background-color: #f0f0f0;
-                color: #666;
-              }
-              .badge.active {
-                background-color: #0078d4;
-                color: white;
-              }
-            </style>
-          </head>
-          <body>
-            <header>
-              <h2>Teams Subtitle Translator</h2>
-              <span id="status-badge" class="badge active">Active</span>
-            </header>
-            
-            <div class="tab-container">
-              <div id="translations-tab" class="tab active">Translations</div>
-              <div id="debug-tab" class="tab">Debug</div>
-            </div>
-            
-            <div id="main-container">
-              <div id="subtitles-container"></div>
-              <div id="debug-container"></div>
-            </div>
-            
-            <div class="controls">
-              <button id="clearBtn">Clear All</button>
-              <button id="copyBtn">Copy to Clipboard</button>
-            </div>
-          </body>
-          </html>
-        `);
-
-        // Ensure the popup window's DOM is fully loaded before updating
-        popupWindow.document.close();
-        
-        // Set up event listeners when the DOM is fully loaded
-        popupWindow.addEventListener('DOMContentLoaded', () => setupPopupEventListeners(updateTranslationsDisplay));
-        
-        // Also try to set up listeners immediately in case DOMContentLoaded already fired
-        setupPopupEventListeners(updateTranslationsDisplay);
-        
-        debugLog("Popup window opened successfully.");
-        
-        // Start checking popup window status
-        startPopupCheck(updateTranslationsDisplay);
-        
-        // Update the debug logs
-        updateDebugLogs();
-      } else {
+      
+      if (!popupWindow) {
         console.error("Popup window was blocked. Please allow popups for this site.");
+        return null;
       }
+      
+      const popupContent = `
+        <!DOCTYPE html>
+        <html lang="en">
+        <head>
+          <meta charset="UTF-8" />
+          <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+          <title>Teams Subtitle Translator</title>
+          <style>
+            body {
+              font-family: Arial, sans-serif;
+              padding: 0;
+              margin: 0;
+              height: 100vh;
+              display: flex;
+              flex-direction: column;
+              background-color: #f9f9f9;
+            }
+            header {
+              background-color: #0078d4;
+              color: white;
+              padding: 10px;
+              display: flex;
+              justify-content: space-between;
+              align-items: center;
+            }
+            h2 {
+              margin: 0;
+              font-size: 18px;
+            }
+            .tab-container {
+              display: flex;
+              background: #f0f0f0;
+              border-bottom: 1px solid #ddd;
+            }
+            .tab {
+              padding: 10px 15px;
+              cursor: pointer;
+              border-right: 1px solid #ddd;
+            }
+            .tab.active {
+              background: #fff;
+              font-weight: bold;
+              border-bottom: 2px solid #0078d4;
+            }
+            #main-container {
+              flex-grow: 1;
+              display: flex;
+              flex-direction: column;
+              overflow: hidden;
+            }
+            #subtitles-container {
+              flex-grow: 1;
+              overflow-y: auto;
+              padding: 15px;
+              background-color: white;
+            }
+            #debug-container {
+              flex-grow: 1;
+              overflow-y: auto;
+              padding: 15px;
+              background-color: white;
+              font-family: monospace;
+              font-size: 12px;
+              display: none;
+            }
+            .speaker-block {
+              margin-bottom: 20px;
+              border-left: 3px solid #0078d4;
+              padding-left: 10px;
+            }
+            .speaker-name {
+              font-weight: bold;
+              color: #0078d4;
+              margin-bottom: 5px;
+            }
+            .utterance {
+              margin-bottom: 10px;
+              padding: 10px;
+              background-color: #f9f9f9;
+              border-radius: 5px;
+              border: 1px solid #eee;
+            }
+            .utterance.active {
+              background-color: #f0f7ff;
+              border-color: #0078d4;
+            }
+            .utterance-text {
+              font-size: 15px;
+              line-height: 1.4;
+            }
+            .timestamp {
+              font-size: 11px;
+              color: #888;
+              margin-top: 5px;
+              text-align: right;
+            }
+            .controls {
+              padding: 10px;
+              display: flex;
+              justify-content: space-between;
+              background: white;
+              border-top: 1px solid #ddd;
+            }
+            button {
+              padding: 8px 15px;
+              cursor: pointer;
+              background-color: #0078d4;
+              color: white;
+              border: none;
+              border-radius: 3px;
+              font-weight: bold;
+            }
+            button:hover {
+              background-color: #106ebe;
+            }
+            .debug-entry {
+              color: #666;
+              margin-bottom: 3px;
+            }
+            .badge {
+              display: inline-block;
+              font-size: 11px;
+              padding: 2px 5px;
+              border-radius: 3px;
+              margin-left: 5px;
+              background-color: #f0f0f0;
+              color: #666;
+            }
+            .badge.active {
+              background-color: #0078d4;
+              color: white;
+            }
+          </style>
+        </head>
+        <body>
+          <header>
+            <h2>Teams Subtitle Translator</h2>
+            <span id="status-badge" class="badge active">Active</span>
+          </header>
+          
+          <div class="tab-container">
+            <div id="translations-tab" class="tab active">Translations</div>
+            <div id="debug-tab" class="tab">Debug</div>
+          </div>
+          
+          <div id="main-container">
+            <div id="subtitles-container"></div>
+            <div id="debug-container"></div>
+          </div>
+          
+          <div class="controls">
+            <button id="clearBtn">Clear All</button>
+            <button id="copyBtn">Copy to Clipboard</button>
+          </div>
+        </body>
+        </html>
+      `;
+      
+      popupWindow.document.open();
+      popupWindow.document.write(popupContent);
+      popupWindow.document.close();
+      
+      // Give window time to initialize
+      clearTimeout(popupInitTimeout);
+      popupInitTimeout = setTimeout(() => {
+        setupPopupEventListeners(updateTranslationsDisplay);
+        debugLog("Popup event listeners setup complete");
+        
+        // Force an initial update
+        updateTranslationsDisplay([], {});
+      }, 300);
+      
+      // Start checking the popup window status
+      startPopupCheck(updateTranslationsDisplay);
+      
+      debugLog("Popup window opened successfully");
     }
     
     return popupWindow;
@@ -257,18 +274,11 @@ function setupPopupEventListeners(updateTranslationsDisplay) {
           return speaker + ':\n' + utterances.join('\n');
         }).join('\n\n');
         
-        popupWindow.navigator.clipboard.writeText(text).then(() => {
-          popupWindow.alert('Translations copied to clipboard');
-        }).catch(err => {
-          console.error('Failed to copy: ', err);
-          popupWindow.alert('Failed to copy: ' + err.message);
-        });
+        popupWindow.navigator.clipboard.writeText(text)
+          .then(() => alert('Translations copied to clipboard'))
+          .catch(err => alert('Failed to copy: ' + err.message));
       });
     }
-    
-    // Auto-scroll for containers
-    setupAutoScroll(subtitlesContainer);
-    setupAutoScroll(debugContainer);
     
     debugLog("Popup event listeners set up successfully");
   } catch (error) {
@@ -277,23 +287,14 @@ function setupPopupEventListeners(updateTranslationsDisplay) {
 }
 
 /**
- * Set up auto-scroll for a container
- * @param {HTMLElement} container - The container to auto-scroll
+ * Check if popup window is accessible and responsive
+ * @returns {boolean} - True if popup is accessible
  */
-function setupAutoScroll(container) {
-  if (!container || !popupWindow) return;
-  
+function isPopupAccessible() {
   try {
-    const observer = new popupWindow.MutationObserver(() => {
-      container.scrollTop = container.scrollHeight;
-    });
-    
-    observer.observe(container, { 
-      childList: true, 
-      subtree: true 
-    });
-  } catch (error) {
-    console.error("Error setting up auto-scroll:", error);
+    return popupWindow && !popupWindow.closed && popupWindow.document;
+  } catch (e) {
+    return false;
   }
 }
 
@@ -301,21 +302,34 @@ function setupAutoScroll(container) {
  * Update debug logs in the popup window
  */
 function updateDebugLogs() {
-  if (!popupWindow || popupWindow.closed) return;
+  if (!isPopupAccessible()) return;
   
   try {
     const debugContainer = popupWindow.document.getElementById('debug-container');
     if (debugContainer) {
-      // Clear existing logs
+      // Get logs
+      const logs = getDebugLogs();
+      
+      // Only update if there are logs
+      if (logs.length === 0) return;
+      
+      // Clear container
       debugContainer.innerHTML = '';
       
-      // Add all debug logs
-      for (const log of getDebugLogs()) {
+      // Add logs as a batch
+      const fragment = popupWindow.document.createDocumentFragment();
+      
+      for (const log of logs) {
         const logDiv = popupWindow.document.createElement('div');
         logDiv.className = 'debug-entry';
         logDiv.textContent = log;
-        debugContainer.appendChild(logDiv);
+        fragment.appendChild(logDiv);
       }
+      
+      debugContainer.appendChild(fragment);
+      
+      // Auto-scroll to bottom
+      debugContainer.scrollTop = debugContainer.scrollHeight;
     }
   } catch (error) {
     console.error("Error updating debug logs:", error);
@@ -324,7 +338,6 @@ function updateDebugLogs() {
 
 /**
  * Start checking popup window status
- * @param {boolean} isTranslationActive - Whether translation is active
  * @param {Function} updateTranslationsDisplay - Function to update translations
  */
 function startPopupCheck(updateTranslationsDisplay) {
@@ -333,11 +346,13 @@ function startPopupCheck(updateTranslationsDisplay) {
   }
   
   popupCheckInterval = setInterval(() => {
-    if (window.isTranslationActive && (!popupWindow || popupWindow.closed)) {
-      debugLog("Popup window was closed, reopening...");
-      openTranslationsWindow(updateTranslationsDisplay);
+    if (window.isTranslationActive) {
+      if (!isPopupAccessible()) {
+        debugLog("Popup window was closed, reopening...");
+        openTranslationsWindow(updateTranslationsDisplay);
+      }
     }
-  }, 2000); // Check every 2 seconds
+  }, 3000); // Check every 3 seconds
 }
 
 /**
@@ -350,107 +365,191 @@ function stopPopupCheck() {
   }
 }
 
+// Store active utterances by ID to avoid duplicates
+let activeUtterancesById = {};
+
 /**
  * Update the translation display in the popup
  * @param {Array} translatedUtterances - Array of translated utterances
  * @param {Object} activeSpeakers - Map of active speakers
  */
 function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
-  if (!popupWindow || popupWindow.closed) {
+  if (!isPopupAccessible()) {
     return;
   }
   
   try {
     // Get the subtitles container
     const subtitlesContainer = popupWindow.document.getElementById('subtitles-container');
+    if (!subtitlesContainer) return;
     
-    if (!subtitlesContainer) {
-      debugLog("subtitles container not found, retrying...");
-      setTimeout(() => updateTranslationsDisplay(translatedUtterances, activeSpeakers), 100);
-      return;
-    }
+    // Check if we're at the bottom of the container (for auto-scrolling)
+    const isAtBottom = subtitlesContainer.scrollHeight - subtitlesContainer.scrollTop - subtitlesContainer.clientHeight < 50;
     
-    // Clear the container
-    subtitlesContainer.innerHTML = "";
+    // Cache existing blocks to avoid unnecessary DOM operations
+    const existingBlocks = {};
+    const speakerBlocks = Array.from(subtitlesContainer.querySelectorAll('.speaker-block'));
     
-    // Create a map of speaker blocks
-    const speakerBlocks = {};
-    
-    // Add all finalized utterances
-    for (const utterance of translatedUtterances) {
-      if (!speakerBlocks[utterance.speakerId]) {
-        speakerBlocks[utterance.speakerId] = createSpeakerBlock(utterance.speaker);
+    speakerBlocks.forEach(block => {
+      const speakerNameEl = block.querySelector('.speaker-name');
+      if (speakerNameEl) {
+        existingBlocks[speakerNameEl.dataset.speakerId] = block;
       }
-      
-      // Add this utterance to the speaker's block
-      const utteranceDiv = createUtteranceDiv(utterance, false);
-      speakerBlocks[utterance.speakerId].appendChild(utteranceDiv);
+    });
+    
+    // Process finalized utterances
+    for (const utterance of translatedUtterances) {
+      // Store the utterance by ID to avoid duplicates
+      if (!activeUtterancesById[utterance.id]) {
+        activeUtterancesById[utterance.id] = utterance;
+      }
     }
     
-    // Add active utterances
+    // Process active speakers and add them to the tracking
     for (const speakerId in activeSpeakers) {
       const activeSpeech = activeSpeakers[speakerId];
       
-      if (!speakerBlocks[speakerId]) {
-        speakerBlocks[speakerId] = createSpeakerBlock(activeSpeech.speaker);
-      }
+      // Create a unique ID for this active utterance
+      const utteranceId = `active_${speakerId}_${activeSpeech.utteranceId}`;
       
-      // Create an utterance object for the active speech
-      const activeUtterance = {
-        id: activeSpeech.utteranceId,
+      // Store or update in our tracking
+      activeUtterancesById[utteranceId] = {
+        id: utteranceId,
         speaker: activeSpeech.speaker,
+        speakerId: speakerId,
         original: activeSpeech.fullText,
         translated: activeSpeech.translatedText || "Translating...",
-        timestamp: new Date().toLocaleTimeString()
+        timestamp: new Date().toLocaleTimeString(),
+        active: true
       };
+    }
+    
+    // Create a map to organize by speaker
+    const speakerUtterances = {};
+    
+    // Organize all utterances by speaker
+    for (const utteranceId in activeUtterancesById) {
+      const utterance = activeUtterancesById[utteranceId];
       
-      // Add the active utterance to the speaker's block
-      const utteranceDiv = createUtteranceDiv(activeUtterance, true);
-      speakerBlocks[speakerId].appendChild(utteranceDiv);
+      // Skip if it's an active utterance but not in activeSpeakers anymore
+      if (utterance.active && !activeSpeakers[utterance.speakerId]) {
+        delete activeUtterancesById[utteranceId];
+        continue;
+      }
+      
+      if (!speakerUtterances[utterance.speakerId]) {
+        speakerUtterances[utterance.speakerId] = {
+          name: utterance.speaker,
+          id: utterance.speakerId,
+          utterances: []
+        };
+      }
+      
+      speakerUtterances[utterance.speakerId].utterances.push(utterance);
     }
     
-    // Add all speaker blocks to the container
-    for (const speakerId in speakerBlocks) {
-      subtitlesContainer.appendChild(speakerBlocks[speakerId]);
+    // Sort each speaker's utterances by ID (which includes timestamp)
+    for (const speakerId in speakerUtterances) {
+      speakerUtterances[speakerId].utterances.sort((a, b) => {
+        // Extract timestamps from utterance IDs or use actual timestamps
+        const getTime = (u) => {
+          if (u.id.startsWith('active_')) {
+            return parseInt(u.id.split('_')[2]);
+          } else {
+            return parseInt(u.id);
+          }
+        };
+        return getTime(a) - getTime(b);
+      });
     }
     
-    // Update the debug logs too
+    // Now update the DOM - first remove any speakers that are no longer present
+    for (const speakerId in existingBlocks) {
+      if (!speakerUtterances[speakerId]) {
+        subtitlesContainer.removeChild(existingBlocks[speakerId]);
+        delete existingBlocks[speakerId];
+      }
+    }
+    
+    // Create or update speaker blocks
+    for (const speakerId in speakerUtterances) {
+      const speakerData = speakerUtterances[speakerId];
+      let speakerBlock = existingBlocks[speakerId];
+      
+      // Create new block if it doesn't exist
+      if (!speakerBlock) {
+        speakerBlock = popupWindow.document.createElement('div');
+        speakerBlock.className = 'speaker-block';
+        
+        const speakerName = popupWindow.document.createElement('div');
+        speakerName.className = 'speaker-name';
+        speakerName.textContent = speakerData.name;
+        speakerName.dataset.speakerId = speakerId;
+        
+        speakerBlock.appendChild(speakerName);
+        subtitlesContainer.appendChild(speakerBlock);
+      }
+      
+      // Get existing utterances in this block to avoid recreating them
+      const existingUtterances = {};
+      Array.from(speakerBlock.querySelectorAll('.utterance')).forEach(utteranceEl => {
+        existingUtterances[utteranceEl.dataset.utteranceId] = utteranceEl;
+      });
+      
+      // Now update or create utterance elements
+      for (const utterance of speakerData.utterances) {
+        let utteranceEl = existingUtterances[utterance.id];
+        
+        // Create or update utterance
+        if (!utteranceEl) {
+          utteranceEl = popupWindow.document.createElement('div');
+          utteranceEl.className = utterance.active ? 'utterance active' : 'utterance';
+          utteranceEl.dataset.utteranceId = utterance.id;
+          
+          const textDiv = popupWindow.document.createElement('div');
+          textDiv.className = 'utterance-text';
+          utteranceEl.appendChild(textDiv);
+          
+          const timestampDiv = popupWindow.document.createElement('div');
+          timestampDiv.className = 'timestamp';
+          utteranceEl.appendChild(timestampDiv);
+          
+          speakerBlock.appendChild(utteranceEl);
+        }
+        
+        // Always update the content to ensure it's current
+        const textDiv = utteranceEl.querySelector('.utterance-text');
+        if (textDiv) textDiv.textContent = utterance.translated;
+        
+        const timestampDiv = utteranceEl.querySelector('.timestamp');
+        if (timestampDiv) timestampDiv.textContent = utterance.timestamp;
+        
+        // Update active state
+        if (utterance.active) {
+          utteranceEl.classList.add('active');
+        } else {
+          utteranceEl.classList.remove('active');
+        }
+        
+        // Remove from tracking so we don't delete it later
+        delete existingUtterances[utterance.id];
+      }
+      
+      // Remove any utterance elements that are no longer needed
+      for (const utteranceId in existingUtterances) {
+        speakerBlock.removeChild(existingUtterances[utteranceId]);
+      }
+    }
+    
+    // Scroll to bottom if we were already there
+    if (isAtBottom) {
+      subtitlesContainer.scrollTop = subtitlesContainer.scrollHeight;
+    }
+    
+    // Also update debug logs
     updateDebugLogs();
-    
-    // Function to create a speaker block
-    function createSpeakerBlock(speakerName) {
-      const speakerBlock = popupWindow.document.createElement('div');
-      speakerBlock.className = 'speaker-block';
-      
-      const speakerNameDiv = popupWindow.document.createElement('div');
-      speakerNameDiv.className = 'speaker-name';
-      speakerNameDiv.textContent = speakerName;
-      speakerBlock.appendChild(speakerNameDiv);
-      
-      return speakerBlock;
-    }
-    
-    // Function to create an utterance div
-    function createUtteranceDiv(utterance, isActive) {
-      const utteranceDiv = popupWindow.document.createElement('div');
-      utteranceDiv.className = isActive ? 'utterance active' : 'utterance';
-      
-      const textDiv = popupWindow.document.createElement('div');
-      textDiv.className = 'utterance-text';
-      textDiv.textContent = utterance.translated;
-      utteranceDiv.appendChild(textDiv);
-      
-      const timestampDiv = popupWindow.document.createElement('div');
-      timestampDiv.className = 'timestamp';
-      timestampDiv.textContent = utterance.timestamp;
-      utteranceDiv.appendChild(timestampDiv);
-      
-      return utteranceDiv;
-    }
   } catch (error) {
     console.error("Error updating translations display:", error);
-    // If we got an error, the popup window might be inaccessible
-    // We'll leave it to the caller to handle reopening if needed
   }
 }
 
@@ -459,7 +558,7 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
  * @param {boolean} isActive - Whether translation is active
  */
 function setTranslationStatus(isActive) {
-  if (!popupWindow || popupWindow.closed) return;
+  if (!isPopupAccessible()) return;
   
   try {
     const statusBadge = popupWindow.document.getElementById('status-badge');
@@ -477,9 +576,15 @@ function setTranslationStatus(isActive) {
  */
 function closePopupWindow() {
   if (popupWindow && !popupWindow.closed) {
-    popupWindow.close();
+    try {
+      popupWindow.close();
+    } catch (e) {
+      console.error("Error closing popup window:", e);
+    }
   }
+  
   popupWindow = null;
+  activeUtterancesById = {}; // Clear the utterance tracking
 }
 
 export {

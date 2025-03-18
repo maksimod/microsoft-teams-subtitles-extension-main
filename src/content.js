@@ -16,7 +16,8 @@ import {
   debounceProcessSubtitles,
   clearSubtitleData,
   getActiveSpeakers,
-  getTranslatedUtterances
+  getTranslatedUtterances,
+  resetKnownSubtitles
 } from './subtitle-processor.js';
 
 // Wrap the entire script in a self-executing function to avoid global scope pollution
@@ -37,11 +38,6 @@ import {
   let connectionFailed = false;
   let connectionRetryCount = 0;
   const MAX_CONNECTION_RETRIES = 3;
-  
-  // Expose the updateDebugLogs function to the window for use by the popup
-  window.updateDebugLogs = function() {
-    updateDebugLogs();
-  };
   
   // Expose the clearAllTranslations function to the window for use by the popup
   window.clearAllTranslations = function() {
@@ -108,6 +104,9 @@ import {
       return { status: "success" };
     }
     
+    // Reset known subtitles when starting to avoid translating old ones
+    resetKnownSubtitles();
+    
     // Verify API connection first
     const connectionValid = await verifyConnection();
     if (!connectionValid) {
@@ -121,29 +120,58 @@ import {
     
     debugLog(`Starting translation with input: ${inputLang}, output: ${outputLang}`);
     
-    // Create a new observer if it doesn't exist
-    if (!observer) {
-      observer = new MutationObserver(() => {
-        debounceProcessSubtitles(isTranslationActive, inputLang, outputLang);
-      });
-    }
-    
-    // Start observing the DOM
-    observer.observe(document.body, {
-      childList: true,
-      subtree: true,
-      attributes: false,
-      characterData: false,
-    });
-    
     // Open the translations window
     openTranslationsWindow(updateTranslationsDisplay);
     
     // Update translation status
     setTranslationStatus(true);
     
+    // Only observe the caption container instead of the entire body
+    const findCaptionContainer = () => {
+      // Try to find the caption container element
+      const possibleContainers = [
+        document.querySelector('[role="dialog"][aria-label*="caption"], [data-tid="meetup-captions-container"]'),
+        document.querySelector('[data-tid="closed-caption-container"]'),
+        document.querySelector('.cc-container')
+      ];
+      
+      return possibleContainers.find(el => el);
+    };
+    
+    const captionContainer = findCaptionContainer();
+    
+    // Create a new observer if it doesn't exist
+    if (!observer) {
+      observer = new MutationObserver(() => {
+        debounceProcessSubtitles(isTranslationActive, inputLang, outputLang);
+      });
+      
+      // Set observation options - only monitor what we need
+      const observerOptions = {
+        childList: true,
+        subtree: true,
+        characterData: true,
+        attributes: false
+      };
+      
+      // If we found a caption container, observe only that
+      if (captionContainer) {
+        debugLog(`Found caption container, observing specifically`);
+        observer.observe(captionContainer, observerOptions);
+      } else {
+        // Fallback to observing the body, but with more limited scope
+        debugLog(`No caption container found, observing body`);
+        observer.observe(document.body, observerOptions);
+      }
+    }
+    
     // Add a safety check to periodically ensure everything is still working
     startSafetyChecks();
+    
+    // Force an immediate update
+    setTimeout(() => {
+      updateTranslationsDisplay(getTranslatedUtterances(), getActiveSpeakers());
+    }, 100);
     
     return { status: "success" };
   }
@@ -169,13 +197,25 @@ import {
             debounceProcessSubtitles(isTranslationActive, inputLang, outputLang);
           });
           
+          // Find caption container again
+          const captionContainer = document.querySelector('[data-tid="closed-caption-container"]');
+          
           // Reattach it
-          observer.observe(document.body, {
-            childList: true,
-            subtree: true,
-            attributes: false,
-            characterData: false,
-          });
+          if (captionContainer) {
+            observer.observe(captionContainer, {
+              childList: true,
+              subtree: true,
+              characterData: true,
+              attributes: false
+            });
+          } else {
+            observer.observe(document.body, {
+              childList: true,
+              subtree: true,
+              characterData: true,
+              attributes: false
+            });
+          }
         }
         
         // Check for any recent translation failures
@@ -183,6 +223,12 @@ import {
           // Try to reconnect
           verifyConnection();
         }
+        
+        // Update the translations display to make sure it's in sync
+        updateTranslationsDisplay(
+          getTranslatedUtterances(),
+          getActiveSpeakers()
+        );
       }
     }, 30000); // Check every 30 seconds
   }
@@ -256,14 +302,39 @@ import {
   window.addEventListener('beforeunload', () => {
     if (observer) {
       observer.disconnect();
+      observer = null;
     }
     closePopupWindow();
     clearTranslationTimers();
     
     if (safetyCheckTimer) {
       clearInterval(safetyCheckTimer);
+      safetyCheckTimer = null;
     }
   });
+  
+  // Regular updates - don't make these too frequent to avoid performance issues
+  let updateDisplayInterval = null;
+  
+  function startDisplayUpdates() {
+    // Clear existing interval if any
+    if (updateDisplayInterval) {
+      clearInterval(updateDisplayInterval);
+    }
+    
+    // Set new interval
+    updateDisplayInterval = setInterval(() => {
+      if (isTranslationActive) {
+        updateTranslationsDisplay(
+          getTranslatedUtterances(),
+          getActiveSpeakers()
+        );
+      }
+    }, 250); // Update 4 times per second
+  }
+  
+  // Start display updates
+  startDisplayUpdates();
   
   debugLog("Content script initialized successfully");
 })();

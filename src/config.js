@@ -8,19 +8,24 @@ const Config = {
   DEFAULT_OUTPUT_LANG: "en",
   
   // Speech detection and buffering control
-  SPEECH_SEGMENT_TIMEOUT: 5000, // Time between speech segments to consider them separate
-  TRANSLATION_THROTTLE: 3000, // Increased to 3000ms to avoid API rate limits
-  DEBOUNCE_DELAY: 300, // 300ms for better stability
+  SPEECH_SEGMENT_TIMEOUT: 3000,  // Time between speech segments
+  TRANSLATION_THROTTLE: 1500,    // Delay between translation requests
+  DEBOUNCE_DELAY: 150,           // Delay for debouncing DOM updates
   
-  // OpenAI model to use - используем более простую модель
+  // OpenAI model to use
   MODEL_NAME: "gpt-3.5-turbo-0125",
   
   // Debug settings
   MAX_DEBUG_LOGS: 100,
   
   // Request settings
-  MAX_RETRIES: 2,
-  RETRY_DELAY: 1000
+  MAX_RETRIES: 1,                // Number of retries for failed requests
+  RETRY_DELAY: 800,              // Delay between retries
+  
+  // Performance and stability
+  MAX_STORED_UTTERANCES: 10,     // Limit for utterances per speaker
+  SUBTITLE_PROCESSING_INTERVAL: 150, // Rate limiting for subtitle processing
+  OBSERVER_UPDATE_INTERVAL: 30000 // Health check interval for observer
 };
 
 export default Config;

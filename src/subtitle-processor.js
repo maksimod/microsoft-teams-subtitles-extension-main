@@ -14,6 +14,15 @@ let activeSpeakers = {}; // Map of active speakers and their current utterances
 let knownSubtitles = new Set(); // Set of known subtitle texts to avoid duplicates
 let translatedUtterances = []; // Fully translated utterances
 let isClearing = false; // Flag to prevent clearing and adding simultaneously
+let lastProcessedTime = 0; // Track when we last processed subtitles to avoid processing too frequently
+
+/**
+ * Reset known subtitles to avoid processing past items
+ */
+function resetKnownSubtitles() {
+  knownSubtitles.clear();
+  debugLog("Known subtitles reset");
+}
 
 /**
  * Process subtitles found in the DOM
@@ -22,9 +31,17 @@ let isClearing = false; // Flag to prevent clearing and adding simultaneously
  * @param {string} outputLang - Output language
  */
 function processSubtitles(isTranslationActive, inputLang, outputLang) {
+  // Skip processing if translation is inactive or we're currently clearing
   if (!isTranslationActive || isClearing) {
     return;
   }
+  
+  // Rate limit processing to avoid performance issues
+  const now = Date.now();
+  if (now - lastProcessedTime < 150) { // Don't process more often than every 150ms
+    return;
+  }
+  lastProcessedTime = now;
 
   // Select all subtitle containers
   const subtitleContainers = document.querySelectorAll(
@@ -36,20 +53,17 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
   }
 
   try {
+    // Use a map to collect unique text by speaker
+    const currentTexts = new Map();
+    
     // Process each subtitle container
     for (const subtitleContainer of subtitleContainers) {
       const text = subtitleContainer.innerText.trim();
       
-      // Skip if the text is empty or already processed
+      // Skip if the text is empty or already processed recently
       if (!text || knownSubtitles.has(text)) {
         continue;
       }
-      
-      // Add to known subtitles set
-      knownSubtitles.add(text);
-      
-      // Add to all captured text
-      allCapturedText.push(text);
       
       // Try to detect the current speaker
       let speakerElement = null;
@@ -67,6 +81,23 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
       
       const speakerId = getSpeakerId(speakerName);
       
+      // Add to the current texts map
+      currentTexts.set(speakerId, {
+        text,
+        speakerName
+      });
+      
+      // Add to known subtitles set to avoid duplicates
+      knownSubtitles.add(text);
+    }
+    
+    // Now process each unique speaker's text
+    for (const [speakerId, data] of currentTexts.entries()) {
+      const { text, speakerName } = data;
+      
+      // Add to all captured text
+      allCapturedText.push(text);
+      
       debugLog(`Detected subtitle from ${speakerName}: "${text}"`);
       
       // Check if this is a continued speech or a new one
@@ -75,8 +106,11 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
         // Update the time of the last segment
         activeSpeakers[speakerId].lastTime = Date.now();
         
-        // Add this segment to the segments array
-        activeSpeakers[speakerId].segments.push(text);
+        // Add this segment to the segments array if it's not already there
+        const segments = activeSpeakers[speakerId].segments;
+        if (!segments.includes(text)) {
+          segments.push(text);
+        }
         
         // Reset the finalization timer
         clearActiveTimerForSpeaker(speakerId, 'finalize');
@@ -86,8 +120,8 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
           finalizeSpeech(speakerId, inputLang, outputLang);
         }, Config.SPEECH_SEGMENT_TIMEOUT));
         
-        // Update the full text
-        activeSpeakers[speakerId].fullText = activeSpeakers[speakerId].segments.join(' ');
+        // Update the full text - join with spaces but avoid duplicate content
+        activeSpeakers[speakerId].fullText = segments.join(' ');
         
         // Translate the updated text
         translateAndUpdateUtterance(speakerId, inputLang, outputLang);
@@ -118,8 +152,10 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
         // Start translation for this new segment
         translateAndUpdateUtterance(speakerId, inputLang, outputLang);
       }
-      
-      // Update the display
+    }
+    
+    // Update the display if we processed anything
+    if (currentTexts.size > 0) {
       updateTranslationsDisplay(translatedUtterances, activeSpeakers);
     }
   } catch (error) {
@@ -140,8 +176,8 @@ async function translateAndUpdateUtterance(speakerId, inputLang, outputLang) {
   const utterance = activeSpeakers[speakerId];
   const textToTranslate = utterance.fullText;
   
-  // If this is a very short text, don't bother translating yet
-  if (textToTranslate.length < 3) {
+  // Skip translating very short text
+  if (textToTranslate.length < 1) {
     utterance.translatedText = "...";
     updateTranslationsDisplay(translatedUtterances, activeSpeakers);
     return;
@@ -155,8 +191,42 @@ async function translateAndUpdateUtterance(speakerId, inputLang, outputLang) {
   
   // If this speaker is still active and this is still the current utterance
   if (activeSpeakers[speakerId] && activeSpeakers[speakerId].utteranceId === utterance.utteranceId) {
-    activeSpeakers[speakerId].translatedText = translatedText;
+    // Always set the translated text, even if it failed
+    activeSpeakers[speakerId].translatedText = translatedText || "Translating...";
+    
+    // Log the partial translation
+    debugLog(`Updated active utterance: "${
+      (activeSpeakers[speakerId].translatedText || "").substring(0, 40)
+    }..."`);
+    
+    // Immediately update the display to show progress
     updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+  }
+}
+
+/**
+ * Find and replace an existing finalized utterance, or add a new one
+ * @param {object} utterance - The utterance to add or update
+ */
+function addOrUpdateUtterance(utterance) {
+  // Try to find an existing utterance from the same speaker
+  const existingIndex = translatedUtterances.findIndex(u => 
+    u.speakerId === utterance.speakerId && 
+    u.id !== utterance.id // Not the same utterance
+  );
+  
+  if (existingIndex >= 0) {
+    // Replace the existing utterance instead of adding a new one
+    translatedUtterances[existingIndex] = utterance;
+    debugLog(`Updated existing utterance from ${utterance.speaker}`);
+  } else {
+    // Add as a new utterance
+    translatedUtterances.push(utterance);
+    
+    // Keep array size manageable
+    if (translatedUtterances.length > Config.MAX_STORED_UTTERANCES) {
+      translatedUtterances = translatedUtterances.slice(-Config.MAX_STORED_UTTERANCES);
+    }
   }
 }
 
@@ -178,14 +248,14 @@ async function finalizeSpeech(speakerId, inputLang, outputLang) {
     if (translatedText) {
       utterance.translatedText = translatedText;
     } else {
-      utterance.translatedText = "[Translation unavailable]";
+      utterance.translatedText = "Translating...";
     }
   }
   
   // Only add to finalized utterances if we're not currently clearing
   if (!isClearing) {
-    // Add the finalized utterance to our list
-    translatedUtterances.push({
+    // Create a final utterance object
+    const finalUtterance = {
       id: utterance.utteranceId,
       speaker: utterance.speaker,
       speakerId: speakerId,
@@ -193,7 +263,13 @@ async function finalizeSpeech(speakerId, inputLang, outputLang) {
       translated: utterance.translatedText,
       timestamp: new Date().toLocaleTimeString(),
       segments: [...utterance.segments]
-    });
+    };
+    
+    // Add or update in our collection
+    addOrUpdateUtterance(finalUtterance);
+    
+    // Log the complete translation
+    debugLog(`Finalized speech: "${utterance.translatedText?.substring(0, 40) || 'n/a'}..."`);
   }
   
   // Mark it as inactive
@@ -275,5 +351,6 @@ export {
   debounceProcessSubtitles,
   clearSubtitleData,
   getActiveSpeakers,
-  getTranslatedUtterances
+  getTranslatedUtterances,
+  resetKnownSubtitles
 };
