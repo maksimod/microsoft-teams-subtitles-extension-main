@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Teams Subtitle Translator</title>
+    <style>
+      body {
+        font-family: Arial, sans-serif;
+        padding: 10px;
+        width: 300px;
+      }
+      #subtitles {
+        white-space: pre-line;
+        margin-top: 10px;
+      }
+      label {
+        display: block;
+        margin: 10px 0 5px;
+      }
+      select,
+      button {
+        width: 100%;
+        padding: 5px;
+        margin-bottom: 10px;
+      }
+    </style>
+  </head>
+  <body>
+    <h3>Teams Subtitle Translator</h3>
+    <label for="inputLang">Input Language:</label>
+    <select id="inputLang">
+      <option value="auto">Auto Detect</option>
+      <option value="ru">Russian</option>
+      <option value="en">English</option>
+      <option value="es">Spanish</option>
+      <!-- Add more languages as needed -->
+    </select>
+
+    <label for="outputLang">Output Language:</label>
+    <select id="outputLang">
+      <option value="ru">Russian</option>
+      <option value="en">English</option>
+      <option value="es">Spanish</option>
+      <!-- Add more languages as needed -->
+    </select>
+
+    <button id="startButton">Start Translation</button>
+    <div id="subtitles">No subtitles detected yet.</div>
+
+    <!-- Reference the external JavaScript file -->
+    <script src="popup.js"></script>
+  </body>
+</html>
