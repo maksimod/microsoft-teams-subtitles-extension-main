@@ -2,15 +2,12 @@
 import Config from './config.js';
 import { debugLog } from './utils.js';
 
-// Переменные для управления переводами
+// Keep track of translation requests and throttling
+let lastTranslationRequestTime = {};
+let pendingTranslations = {};
 let activeTimers = {};
 let translationRetryCount = {}; // Retry counter
 let translationCache = new Map(); // Cache for translations to avoid duplicate requests
-
-// Очередь запросов к API
-let translationQueue = [];
-let isProcessingQueue = false;
-let queueTimer = null;
 
 /**
  * Translate text using OpenAI API
@@ -22,170 +19,159 @@ let queueTimer = null;
  */
 async function translateText(speakerId, text, inputLang, outputLang) {
   // Don't translate if the text is too short
-  if (!text || text.length < 2) return text;
+  if (text.length < 2) return text;
   
   // Create cache key
   const cacheKey = `${inputLang}:${outputLang}:${text}`;
   
   // Check cache first
   if (translationCache.has(cacheKey)) {
-    debugLog(`Cache hit for "${text.substring(0, 20)}..."`);
     return translationCache.get(cacheKey);
   }
   
-  // Добавляем запрос в очередь с возвратом Promise
-  return new Promise((resolve) => {
-    // Добавляем запрос в очередь
-    translationQueue.push({
-      speakerId,
+  // Check if we need to throttle this translation request
+  const now = Date.now();
+  if (lastTranslationRequestTime[speakerId] && 
+      now - lastTranslationRequestTime[speakerId] < Config.TRANSLATION_THROTTLE) {
+    // If there's already a pending translation for this speaker, replace it
+    if (pendingTranslations[speakerId]) {
+      pendingTranslations[speakerId].text = text;
+      debugLog(`Throttled translation request for ${speakerId}, queued for later`);
+      return null; // Translation will happen later
+    }
+    
+    // Schedule a translation for later
+    const timeToWait = Config.TRANSLATION_THROTTLE - (now - lastTranslationRequestTime[speakerId]);
+    
+    pendingTranslations[speakerId] = { 
       text,
       inputLang,
-      outputLang,
-      cacheKey,
-      resolve
-    });
+      outputLang
+    };
     
-    // Запускаем обработку очереди, если она еще не запущена
-    if (!isProcessingQueue) {
-      startQueueProcessing();
-    }
-  });
-}
-
-/**
- * Начинает обработку очереди переводов
- */
-function startQueueProcessing() {
-  if (isProcessingQueue) return;
-  
-  isProcessingQueue = true;
-  processNextInQueue();
-}
-
-/**
- * Обрабатывает следующий запрос в очереди переводов
- */
-function processNextInQueue() {
-  if (translationQueue.length === 0) {
-    isProcessingQueue = false;
-    return;
+    activeTimers[`translate_${speakerId}`] = setTimeout(() => {
+      const pendingData = pendingTranslations[speakerId];
+      if (pendingData) {
+        delete pendingTranslations[speakerId];
+        translateText(speakerId, pendingData.text, pendingData.inputLang, pendingData.outputLang);
+      }
+    }, timeToWait);
+    
+    debugLog(`Queued translation for ${speakerId} in ${timeToWait}ms`);
+    return null;
   }
   
-  // Берем следующий запрос из очереди
-  const request = translationQueue.shift();
-  const { speakerId, text, inputLang, outputLang, cacheKey, resolve } = request;
+  // Update the last translation request time
+  lastTranslationRequestTime[speakerId] = now;
   
-  // Логируем обработку
-  debugLog(`Processing queue item for ${speakerId}: "${text.substring(0, 20)}..."`);
-  
-  // Выполняем перевод
-  performTranslation(speakerId, text, inputLang, outputLang).then(result => {
-    // Сохраняем в кэш
-    if (result && !result.includes("Translating") && !result.includes("unavailable")) {
-      translationCache.set(cacheKey, result);
-      
-      // Ограничиваем размер кэша
-      if (translationCache.size > 100) {
-        const keysToDelete = Array.from(translationCache.keys()).slice(0, 20);
-        keysToDelete.forEach(key => translationCache.delete(key));
-      }
-    }
-    
-    // Возвращаем результат через промис
-    resolve(result);
-    
-    // Планируем обработку следующего элемента через TRANSLATION_THROTTLE мс
-    queueTimer = setTimeout(() => {
-      processNextInQueue();
-    }, Config.TRANSLATION_THROTTLE);
-  });
-}
-
-/**
- * Выполняет запрос к API для перевода текста
- * @param {string} speakerId - ID говорящего
- * @param {string} text - Текст для перевода
- * @param {string} inputLang - Исходный язык
- * @param {string} outputLang - Целевой язык
- * @returns {Promise<string>} - Переведенный текст
- */
-async function performTranslation(speakerId, text, inputLang, outputLang) {
-  // Если нет счетчика повторов для этого говорящего, создаем его
+  // Initialize retry count for this speaker if it doesn't exist
   if (!translationRetryCount[speakerId]) {
     translationRetryCount[speakerId] = 0;
   }
   
   try {
-    // Формируем запрос к API
-    const requestBody = {
-      model: Config.MODEL_NAME,
-      messages: [
-        {
-          role: "system",
-          content: `You are a translation assistant. Translate text from ${inputLang} to ${outputLang} concisely and accurately. Keep the translation direct and maintain the same style and tone.`
-        },
-        {
-          role: "user",
-          content: text
+    debugLog(`Translating for ${speakerId}: ${text.substring(0, 40)}...`);
+    
+    // Better error handling with retries
+    const maxRetries = Config.MAX_RETRIES;
+    let response = null;
+    let retryAttempt = 0;
+    
+    while (retryAttempt <= maxRetries) {
+      try {
+        // Format proper request to API
+        const requestBody = {
+          model: Config.MODEL_NAME,
+          messages: [
+            {
+              role: "system",
+              content: `You are a translation assistant. Translate text from ${inputLang} to ${outputLang} concisely and accurately. Keep the translation direct and maintain the same style and tone.`
+            },
+            {
+              role: "user",
+              content: text
+            }
+          ],
+          temperature: 0.3 // Lower temperature for more consistent translations
+        };
+        
+        // Add timeout using AbortController
+        const controller = new AbortController();
+        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+        
+        try {
+          response = await fetch("https://api.openai.com/v1/chat/completions", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+              "Authorization": `Bearer ${Config.OPENAI_API_KEY}`
+            },
+            body: JSON.stringify(requestBody),
+            signal: controller.signal
+          });
+          
+          clearTimeout(timeoutId);
+        } catch (fetchError) {
+          clearTimeout(timeoutId);
+          throw fetchError;
         }
-      ],
-      temperature: 0.3 // Низкая температура для более стабильных переводов
-    };
-    
-    // Добавляем таймаут с помощью AbortController
-    const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 секунд таймаут
-    
-    try {
-      const response = await fetch("https://api.openai.com/v1/chat/completions", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "Authorization": `Bearer ${Config.OPENAI_API_KEY}`
-        },
-        body: JSON.stringify(requestBody),
-        signal: controller.signal
-      });
-      
-      clearTimeout(timeoutId);
-      
-      if (!response.ok) {
-        const errorText = await response.text();
-        throw new Error(`API response error: ${response.status}. Details: ${errorText}`);
+        
+        if (!response.ok) {
+          const errorText = await response.text();
+          throw new Error(`API response error: ${response.status} ${response.statusText}. Details: ${errorText}`);
+        }
+        
+        break; // If we get here, the request was successful
+      } catch (retryError) {
+        retryAttempt++;
+        debugLog(`Translation error (attempt ${retryAttempt}/${maxRetries}): ${retryError.message}`);
+        
+        if (retryAttempt > maxRetries) {
+          throw retryError; // Re-throw if we've exhausted our retries
+        }
+        
+        await new Promise(resolve => setTimeout(resolve, Config.RETRY_DELAY)); // Wait before retrying
       }
-      
-      const data = await response.json();
-      
-      // Проверяем структуру ответа
-      if (!data || !data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
-        throw new Error("Invalid response structure from API");
-      }
-      
-      const translatedText = data.choices[0].message.content.trim();
-      
-      // Сбрасываем счетчик повторов
-      translationRetryCount[speakerId] = 0;
-      
-      debugLog(`Translation complete: ${translatedText.substring(0, 40)}...`);
-      return translatedText;
-    } catch (fetchError) {
-      clearTimeout(timeoutId);
-      throw fetchError;
     }
+
+    const data = await response.json();
+    
+    // Verify that the response has the expected structure
+    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+      throw new Error("Invalid response structure from API");
+    }
+    
+    const translatedText = data.choices[0].message.content.trim();
+    
+    // Add to cache
+    translationCache.set(cacheKey, translatedText);
+    
+    // Limit cache size to avoid memory leaks
+    if (translationCache.size > 500) {
+      // Delete oldest entries (first 100)
+      const keysToDelete = Array.from(translationCache.keys()).slice(0, 100);
+      keysToDelete.forEach(key => translationCache.delete(key));
+    }
+    
+    // Reset retry count on successful translation
+    translationRetryCount[speakerId] = 0;
+    
+    debugLog(`Translation complete: ${translatedText.substring(0, 40)}...`);
+    return translatedText;
   } catch (error) {
     console.error("Translation error:", error);
     debugLog(`Translation error: ${error.message}`);
     
-    // Увеличиваем счетчик повторов
+    // Increment retry count
     translationRetryCount[speakerId]++;
     
-    // Если слишком много ошибок, возвращаем сообщение о недоступности
+    // If we've tried too many times, just return a fallback message
     if (translationRetryCount[speakerId] > 3) {
       return "[Translation unavailable]";
     }
     
-    // Для первых нескольких ошибок
-    return "Translation in progress...";
+    // For the first few errors, return a temporary message but don't retry automatically
+    return "Translating..."; // Return a temporary message
   }
 }
 
@@ -195,12 +181,12 @@ async function performTranslation(speakerId, text, inputLang, outputLang) {
  */
 async function checkApiConnection() {
   try {
-    // Добавляем таймаут
+    // Add timeout using AbortController
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000);
+    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
     
     try {
-      // Делаем простой запрос для проверки доступа к API
+      // Make a simpler request to verify API access
       const response = await fetch("https://api.openai.com/v1/models", {
         method: "GET",
         headers: {
@@ -213,7 +199,7 @@ async function checkApiConnection() {
       
       if (!response.ok) {
         const errorText = await response.text();
-        debugLog(`API check failed: ${response.status}. Details: ${errorText}`);
+        debugLog(`API check failed: ${response.status} ${response.statusText}. Details: ${errorText}`);
         return false;
       }
       
@@ -232,26 +218,18 @@ async function checkApiConnection() {
  * Clear all active translation timers
  */
 function clearTranslationTimers() {
-  // Очищаем все активные таймеры
+  // Clear all active timers
   for (const timerId in activeTimers) {
     clearTimeout(activeTimers[timerId]);
     delete activeTimers[timerId];
   }
   
-  // Очищаем очередь переводов
-  translationQueue = [];
-  isProcessingQueue = false;
+  // Reset translation states
+  lastTranslationRequestTime = {};
+  pendingTranslations = {};
+  translationRetryCount = {}; // Reset retry counts too
   
-  // Очищаем таймер очереди
-  if (queueTimer) {
-    clearTimeout(queueTimer);
-    queueTimer = null;
-  }
-  
-  // Сбрасываем счетчики повторов
-  translationRetryCount = {};
-  
-  // Не очищаем кэш переводов, он может быть повторно использован
+  // No need to clear translation cache - it can be reused
 }
 
 /**
@@ -265,7 +243,7 @@ function getActiveTimerForSpeaker(speakerId, type) {
  * Set active timer for a specific speaker
  */
 function setActiveTimerForSpeaker(speakerId, type, timer) {
-  // Очищаем существующий таймер, если он есть
+  // Clear existing timer first if it exists
   if (activeTimers[`${type}_${speakerId}`]) {
     clearTimeout(activeTimers[`${type}_${speakerId}`]);
   }

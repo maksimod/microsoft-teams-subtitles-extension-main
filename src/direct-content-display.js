@@ -7,9 +7,6 @@ let translationContainer = null;
 let translationElements = {};
 let isDisplayInitialized = false;
 
-// Для отслеживания последних переводов
-let lastTranslations = {};
-
 /**
  * Initialize the inline translation display
  */
@@ -104,8 +101,8 @@ function initializeDisplay() {
 
 /**
  * Update the translation display
- * @param {Object} translatedUtterances - Map of speaker IDs to their latest utterances
- * @param {Object} activeSpeakers - Map of active speakers
+ * @param {Array} translatedUtterances - Translated utterances
+ * @param {Object} activeSpeakers - Active speakers
  */
 function updateDisplay(translatedUtterances, activeSpeakers) {
   if (!isDisplayInitialized) {
@@ -126,75 +123,54 @@ function updateDisplay(translatedUtterances, activeSpeakers) {
     const scrollPosition = translationContainer.scrollTop;
     const isAtBottom = (translationContainer.scrollHeight - translationContainer.scrollTop - translationContainer.clientHeight) < 50;
     
-    // РАДИКАЛЬНО УПРОЩАЕМ - всегда полностью перестраиваем содержимое
-    // Проверяем есть ли изменения
-    let hasChanges = false;
-    
-    // Собираем все текущие переводы
-    const currentTranslations = {};
-    
-    // Добавляем финализированные высказывания
-    for (const speakerId in translatedUtterances) {
-      const utterance = translatedUtterances[speakerId];
-      if (utterance) {
-        currentTranslations[speakerId] = utterance.translated || "";
-      }
-    }
-    
-    // Добавляем активные высказывания (они перезапишут финализированные)
-    for (const speakerId in activeSpeakers) {
-      const speaker = activeSpeakers[speakerId];
-      currentTranslations[speakerId] = speaker.translatedText || "Translating...";
-    }
-    
-    // Проверяем изменения
-    for (const speakerId in currentTranslations) {
-      if (!lastTranslations[speakerId] || lastTranslations[speakerId] !== currentTranslations[speakerId]) {
-        hasChanges = true;
-        break;
-      }
-    }
-    
-    // Проверяем удаленные высказывания
-    for (const speakerId in lastTranslations) {
-      if (!currentTranslations[speakerId]) {
-        hasChanges = true;
-        break;
-      }
-    }
-    
-    // Если нет изменений, не обновляем DOM
-    if (!hasChanges) {
-      return;
-    }
-    
-    // Обновляем кэш последних переводов
-    lastTranslations = {...currentTranslations};
-    
-    // Очищаем контейнер
-    contentContainer.innerHTML = '';
-    
-    // Создаем фрагмент для добавления всего содержимого
+    // Собрать всё содержимое заранее вместо прямой очистки
+    // Это предотвращает мигание и проблемы с отображением
     const fragment = document.createDocumentFragment();
     
-    // Добавляем блоки для каждого говорящего
-    for (const speakerId in currentTranslations) {
-      // Получаем имя говорящего
-      let speakerName = "Unknown";
-      
-      if (translatedUtterances[speakerId]) {
-        speakerName = translatedUtterances[speakerId].speaker;
-      } else if (activeSpeakers[speakerId]) {
-        speakerName = activeSpeakers[speakerId].speaker;
+    // Сгруппировать по говорящему
+    const speakerGroups = {};
+    
+    // Обработать завершенные высказывания
+    for (const utterance of translatedUtterances) {
+      if (!speakerGroups[utterance.speakerId]) {
+        speakerGroups[utterance.speakerId] = {
+          name: utterance.speaker,
+          utterances: []
+        };
       }
       
-      // Получаем текст перевода
-      const translatedText = currentTranslations[speakerId];
+      // ВАЖНО: добавляем в любом случае, даже если текст пустой или это "[Translation unavailable]"
+      speakerGroups[utterance.speakerId].utterances.push({
+        text: utterance.translated,
+        timestamp: utterance.timestamp,
+        active: false
+      });
+    }
+    
+    // Обработать активные высказывания
+    for (const speakerId in activeSpeakers) {
+      const activeSpeech = activeSpeakers[speakerId];
       
-      // Проверяем активность
-      const isActive = !!activeSpeakers[speakerId];
+      if (!speakerGroups[speakerId]) {
+        speakerGroups[speakerId] = {
+          name: activeSpeech.speaker,
+          utterances: []
+        };
+      }
       
-      // Создаем блок говорящего
+      // ВАЖНО: всегда добавляем активное высказывание, какое бы оно ни было
+      speakerGroups[speakerId].utterances.push({
+        text: activeSpeech.translatedText || "Translating...",
+        timestamp: new Date().toLocaleTimeString(),
+        active: true
+      });
+    }
+    
+    // Создать элементы для каждой группы говорящего
+    for (const speakerId in speakerGroups) {
+      const group = speakerGroups[speakerId];
+      
+      // Создать блок говорящего
       const speakerBlock = document.createElement('div');
       speakerBlock.className = 'translator-speaker-block';
       Object.assign(speakerBlock.style, {
@@ -204,59 +180,68 @@ function updateDisplay(translatedUtterances, activeSpeakers) {
       });
       
       // Имя говорящего
-      const speakerNameElem = document.createElement('div');
-      speakerNameElem.textContent = speakerName;
-      Object.assign(speakerNameElem.style, {
+      const speakerName = document.createElement('div');
+      speakerName.textContent = group.name;
+      Object.assign(speakerName.style, {
         fontWeight: 'bold',
         color: '#0078d4',
         marginBottom: '5px'
       });
-      speakerBlock.appendChild(speakerNameElem);
+      speakerBlock.appendChild(speakerName);
       
-      // Высказывание
-      const utteranceDiv = document.createElement('div');
-      utteranceDiv.className = 'translator-utterance';
-      Object.assign(utteranceDiv.style, {
-        marginBottom: '8px',
-        padding: '8px',
-        backgroundColor: isActive ? '#f0f7ff' : '#f5f5f5',
-        borderRadius: '4px',
-        border: isActive ? '1px solid #0078d4' : '1px solid #eee'
-      });
+      // Высказывания
+      for (const utterance of group.utterances) {
+        // УДАЛЕНЫ проверки на пустые переводы - показываем всё, что есть
+        
+        const utteranceDiv = document.createElement('div');
+        utteranceDiv.className = 'translator-utterance';
+        Object.assign(utteranceDiv.style, {
+          marginBottom: '8px',
+          padding: '8px',
+          backgroundColor: utterance.active ? '#f0f7ff' : '#f5f5f5',
+          borderRadius: '4px',
+          border: utterance.active ? '1px solid #0078d4' : '1px solid #eee'
+        });
+        
+        // Текст
+        const textDiv = document.createElement('div');
+        textDiv.textContent = utterance.text || "..."; // Показываем ... если текст пустой
+        Object.assign(textDiv.style, {
+          fontSize: '14px',
+          lineHeight: '1.4'
+        });
+        utteranceDiv.appendChild(textDiv);
+        
+        // Время
+        const timeDiv = document.createElement('div');
+        timeDiv.textContent = utterance.timestamp;
+        Object.assign(timeDiv.style, {
+          fontSize: '11px',
+          color: '#888',
+          textAlign: 'right',
+          marginTop: '4px'
+        });
+        utteranceDiv.appendChild(timeDiv);
+        
+        speakerBlock.appendChild(utteranceDiv);
+      }
       
-      // Текст
-      const textDiv = document.createElement('div');
-      textDiv.textContent = translatedText || "...";
-      Object.assign(textDiv.style, {
-        fontSize: '14px',
-        lineHeight: '1.4'
-      });
-      utteranceDiv.appendChild(textDiv);
-      
-      // Время
-      const timeDiv = document.createElement('div');
-      timeDiv.textContent = new Date().toLocaleTimeString();
-      Object.assign(timeDiv.style, {
-        fontSize: '11px',
-        color: '#888',
-        textAlign: 'right',
-        marginTop: '4px'
-      });
-      utteranceDiv.appendChild(timeDiv);
-      
-      speakerBlock.appendChild(utteranceDiv);
       fragment.appendChild(speakerBlock);
     }
     
-    // Добавляем весь фрагмент в контейнер
+    // Очистить и добавить всё сразу
+    contentContainer.innerHTML = '';
     contentContainer.appendChild(fragment);
     
-    // Восстанавливаем позицию прокрутки
+    // Восстановить позицию прокрутки
     if (isAtBottom) {
       translationContainer.scrollTop = translationContainer.scrollHeight;
     } else {
       translationContainer.scrollTop = scrollPosition;
     }
+    
+    // Дополнительное логирование для отладки
+    debugLog(`Обновлен дисплей: ${Object.keys(speakerGroups).length} говорящих`);
     
   } catch (error) {
     console.error("Error updating display:", error);
@@ -293,9 +278,6 @@ function clearDisplay() {
   if (contentContainer) {
     contentContainer.innerHTML = '';
   }
-  
-  // Очищаем кэш
-  lastTranslations = {};
 }
 
 export {
