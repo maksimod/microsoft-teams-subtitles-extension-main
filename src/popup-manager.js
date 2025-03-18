@@ -13,6 +13,9 @@ let popupInitTimeout = null;
 // Prevent reopening too frequently
 let lastPopupCreationTime = 0;
 
+// Для отслеживания последнего содержимого окна
+let lastSpeakerContents = {};
+
 /**
  * Open the translations window
  * @param {Function} updateTranslationsDisplay - Function to update translations
@@ -205,7 +208,7 @@ function openTranslationsWindow(updateTranslationsDisplay) {
         debugLog("Popup event listeners setup complete");
         
         // Force an initial update
-        updateTranslationsDisplay([], {});
+        updateTranslationsDisplay({}, {});
       }, 300);
       
       // Start checking the popup window status
@@ -365,12 +368,9 @@ function stopPopupCheck() {
   }
 }
 
-// Store active utterances by ID to avoid duplicates
-let activeUtterancesById = {};
-
 /**
  * Update the translation display in the popup
- * @param {Array} translatedUtterances - Array of translated utterances
+ * @param {Object} translatedUtterances - Map of speaker IDs to their latest utterances
  * @param {Object} activeSpeakers - Map of active speakers
  */
 function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
@@ -379,177 +379,146 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
   }
   
   try {
-    // Get the subtitles container
+    // Получаем контейнер субтитров
     const subtitlesContainer = popupWindow.document.getElementById('subtitles-container');
     if (!subtitlesContainer) return;
     
-    // Check if we're at the bottom of the container (for auto-scrolling)
+    // Проверяем, находимся ли мы внизу контейнера (для автопрокрутки)
     const isAtBottom = subtitlesContainer.scrollHeight - subtitlesContainer.scrollTop - subtitlesContainer.clientHeight < 50;
     
-    // Cache existing blocks to avoid unnecessary DOM operations
-    const existingBlocks = {};
-    const speakerBlocks = Array.from(subtitlesContainer.querySelectorAll('.speaker-block'));
+    // РАДИКАЛЬНОЕ РЕШЕНИЕ:
+    // 1. Каждый раз полностью очищаем контейнер
+    // 2. Добавляем только ПОСЛЕДНЕЕ высказывание от каждого говорящего
     
-    speakerBlocks.forEach(block => {
-      const speakerNameEl = block.querySelector('.speaker-name');
-      if (speakerNameEl) {
-        existingBlocks[speakerNameEl.dataset.speakerId] = block;
-      }
-    });
+    // Собираем все высказывания в один массив
+    const allUtterances = [];
     
-    // Process finalized utterances
-    for (const utterance of translatedUtterances) {
-      // Store the utterance by ID to avoid duplicates
-      if (!activeUtterancesById[utterance.id]) {
-        activeUtterancesById[utterance.id] = utterance;
+    // Добавляем финализированные высказывания
+    for (const speakerId in translatedUtterances) {
+      const utterance = translatedUtterances[speakerId];
+      if (utterance) {
+        allUtterances.push({
+          ...utterance,
+          active: false // Финализированные высказывания не активны
+        });
       }
     }
     
-    // Process active speakers and add them to the tracking
+    // Добавляем активные высказывания (они перезапишут финализированные)
     for (const speakerId in activeSpeakers) {
-      const activeSpeech = activeSpeakers[speakerId];
-      
-      // Create a unique ID for this active utterance
-      const utteranceId = `active_${speakerId}_${activeSpeech.utteranceId}`;
-      
-      // Store or update in our tracking
-      activeUtterancesById[utteranceId] = {
-        id: utteranceId,
-        speaker: activeSpeech.speaker,
+      const speaker = activeSpeakers[speakerId];
+      allUtterances.push({
+        id: speaker.utteranceId,
+        speaker: speaker.speaker,
         speakerId: speakerId,
-        original: activeSpeech.fullText,
-        translated: activeSpeech.translatedText || "Translating...",
+        original: speaker.fullText,
+        translated: speaker.translatedText || "Translating...",
         timestamp: new Date().toLocaleTimeString(),
         active: true
-      };
+      });
     }
     
-    // Create a map to organize by speaker
-    const speakerUtterances = {};
+    // Проверяем, изменилось ли содержимое
+    let hasChanged = false;
     
-    // Organize all utterances by speaker
-    for (const utteranceId in activeUtterancesById) {
-      const utterance = activeUtterancesById[utteranceId];
+    for (const utterance of allUtterances) {
+      const speakerId = utterance.speakerId;
+      const content = utterance.translated || "";
       
-      // Skip if it's an active utterance but not in activeSpeakers anymore
-      if (utterance.active && !activeSpeakers[utterance.speakerId]) {
-        delete activeUtterancesById[utteranceId];
-        continue;
+      if (!lastSpeakerContents[speakerId] || lastSpeakerContents[speakerId] !== content) {
+        hasChanged = true;
+        lastSpeakerContents[speakerId] = content;
       }
+    }
+    
+    // Если ничего не изменилось, не обновляем DOM
+    if (!hasChanged && Object.keys(lastSpeakerContents).length === allUtterances.length) {
+      return;
+    }
+    
+    // Очищаем список высказываний, которых больше нет
+    const currentSpeakerIds = allUtterances.map(u => u.speakerId);
+    for (const speakerId in lastSpeakerContents) {
+      if (!currentSpeakerIds.includes(speakerId)) {
+        delete lastSpeakerContents[speakerId];
+      }
+    }
+    
+    // Очистить полностью содержимое контейнера
+    subtitlesContainer.innerHTML = '';
+    
+    // Группируем высказывания по говорящему
+    const speakerGroups = {};
+    
+    for (const utterance of allUtterances) {
+      const speakerId = utterance.speakerId;
       
-      if (!speakerUtterances[utterance.speakerId]) {
-        speakerUtterances[utterance.speakerId] = {
+      // Проверяем, есть ли уже группа для этого говорящего
+      if (!speakerGroups[speakerId]) {
+        speakerGroups[speakerId] = {
           name: utterance.speaker,
-          id: utterance.speakerId,
-          utterances: []
+          id: speakerId,
+          utterance: utterance
         };
-      }
-      
-      speakerUtterances[utterance.speakerId].utterances.push(utterance);
-    }
-    
-    // Sort each speaker's utterances by ID (which includes timestamp)
-    for (const speakerId in speakerUtterances) {
-      speakerUtterances[speakerId].utterances.sort((a, b) => {
-        // Extract timestamps from utterance IDs or use actual timestamps
-        const getTime = (u) => {
-          if (u.id.startsWith('active_')) {
-            return parseInt(u.id.split('_')[2]);
-          } else {
-            return parseInt(u.id);
-          }
-        };
-        return getTime(a) - getTime(b);
-      });
-    }
-    
-    // Now update the DOM - first remove any speakers that are no longer present
-    for (const speakerId in existingBlocks) {
-      if (!speakerUtterances[speakerId]) {
-        subtitlesContainer.removeChild(existingBlocks[speakerId]);
-        delete existingBlocks[speakerId];
+      } else if (utterance.active) {
+        // Если новое высказывание активно, оно приоритетнее
+        speakerGroups[speakerId].utterance = utterance;
       }
     }
     
-    // Create or update speaker blocks
-    for (const speakerId in speakerUtterances) {
-      const speakerData = speakerUtterances[speakerId];
-      let speakerBlock = existingBlocks[speakerId];
+    // Создаем фрагмент для более эффективного добавления в DOM
+    const fragment = popupWindow.document.createDocumentFragment();
+    
+    // Для каждого говорящего создаем блок с его последним высказыванием
+    for (const speakerId in speakerGroups) {
+      const group = speakerGroups[speakerId];
+      const utterance = group.utterance;
       
-      // Create new block if it doesn't exist
-      if (!speakerBlock) {
-        speakerBlock = popupWindow.document.createElement('div');
-        speakerBlock.className = 'speaker-block';
-        
-        const speakerName = popupWindow.document.createElement('div');
-        speakerName.className = 'speaker-name';
-        speakerName.textContent = speakerData.name;
-        speakerName.dataset.speakerId = speakerId;
-        
-        speakerBlock.appendChild(speakerName);
-        subtitlesContainer.appendChild(speakerBlock);
-      }
+      // Создаем блок говорящего
+      const speakerBlock = popupWindow.document.createElement('div');
+      speakerBlock.className = 'speaker-block';
+      speakerBlock.dataset.speakerId = speakerId;
       
-      // Get existing utterances in this block to avoid recreating them
-      const existingUtterances = {};
-      Array.from(speakerBlock.querySelectorAll('.utterance')).forEach(utteranceEl => {
-        existingUtterances[utteranceEl.dataset.utteranceId] = utteranceEl;
-      });
+      // Имя говорящего
+      const speakerName = popupWindow.document.createElement('div');
+      speakerName.className = 'speaker-name';
+      speakerName.textContent = group.name;
+      speakerBlock.appendChild(speakerName);
       
-      // Now update or create utterance elements
-      for (const utterance of speakerData.utterances) {
-        let utteranceEl = existingUtterances[utterance.id];
-        
-        // Create or update utterance
-        if (!utteranceEl) {
-          utteranceEl = popupWindow.document.createElement('div');
-          utteranceEl.className = utterance.active ? 'utterance active' : 'utterance';
-          utteranceEl.dataset.utteranceId = utterance.id;
-          
-          const textDiv = popupWindow.document.createElement('div');
-          textDiv.className = 'utterance-text';
-          utteranceEl.appendChild(textDiv);
-          
-          const timestampDiv = popupWindow.document.createElement('div');
-          timestampDiv.className = 'timestamp';
-          utteranceEl.appendChild(timestampDiv);
-          
-          speakerBlock.appendChild(utteranceEl);
-        }
-        
-        // Always update the content to ensure it's current
-        const textDiv = utteranceEl.querySelector('.utterance-text');
-        if (textDiv) textDiv.textContent = utterance.translated;
-        
-        const timestampDiv = utteranceEl.querySelector('.timestamp');
-        if (timestampDiv) timestampDiv.textContent = utterance.timestamp;
-        
-        // Update active state
-        if (utterance.active) {
-          utteranceEl.classList.add('active');
-        } else {
-          utteranceEl.classList.remove('active');
-        }
-        
-        // Remove from tracking so we don't delete it later
-        delete existingUtterances[utterance.id];
-      }
+      // Высказывание
+      const utteranceEl = popupWindow.document.createElement('div');
+      utteranceEl.className = utterance.active ? 'utterance active' : 'utterance';
+      utteranceEl.dataset.utteranceId = utterance.id;
       
-      // Remove any utterance elements that are no longer needed
-      for (const utteranceId in existingUtterances) {
-        speakerBlock.removeChild(existingUtterances[utteranceId]);
-      }
+      // Текст высказывания
+      const textDiv = popupWindow.document.createElement('div');
+      textDiv.className = 'utterance-text';
+      textDiv.textContent = utterance.translated || "";
+      utteranceEl.appendChild(textDiv);
+      
+      // Время
+      const timeDiv = popupWindow.document.createElement('div');
+      timeDiv.className = 'timestamp';
+      timeDiv.textContent = utterance.timestamp || "";
+      utteranceEl.appendChild(timeDiv);
+      
+      speakerBlock.appendChild(utteranceEl);
+      fragment.appendChild(speakerBlock);
     }
     
-    // Scroll to bottom if we were already there
+    // Добавляем все элементы во фрагмент, а затем в DOM
+    subtitlesContainer.appendChild(fragment);
+    
+    // Прокручиваем вниз, если мы были внизу
     if (isAtBottom) {
       subtitlesContainer.scrollTop = subtitlesContainer.scrollHeight;
     }
     
-    // Also update debug logs
+    // Также обновляем отладочные логи
     updateDebugLogs();
   } catch (error) {
     console.error("Error updating translations display:", error);
+    debugLog(`Error updating display: ${error.message}`);
   }
 }
 
@@ -584,7 +553,7 @@ function closePopupWindow() {
   }
   
   popupWindow = null;
-  activeUtterancesById = {}; // Clear the utterance tracking
+  lastSpeakerContents = {};
 }
 
 export {
