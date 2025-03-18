@@ -13,6 +13,12 @@ let popupInitTimeout = null;
 // Prevent reopening too frequently
 let lastPopupCreationTime = 0;
 
+// Track all accumulated translations by speaker and utterance ID
+let accumulatedTranslations = {};
+
+// Maintain speaker history to preserve order
+let speakerDisplayOrder = [];
+
 /**
  * Open the translations window
  * @param {Function} updateTranslationsDisplay - Function to update translations
@@ -60,6 +66,9 @@ function openTranslationsWindow(updateTranslationsDisplay) {
               display: flex;
               justify-content: space-between;
               align-items: center;
+              position: sticky;
+              top: 0;
+              z-index: 100;
             }
             h2 {
               margin: 0;
@@ -69,6 +78,9 @@ function openTranslationsWindow(updateTranslationsDisplay) {
               display: flex;
               background: #f0f0f0;
               border-bottom: 1px solid #ddd;
+              position: sticky;
+              top: 42px;
+              z-index: 100;
             }
             .tab {
               padding: 10px 15px;
@@ -91,6 +103,7 @@ function openTranslationsWindow(updateTranslationsDisplay) {
               overflow-y: auto;
               padding: 15px;
               background-color: white;
+              scroll-behavior: smooth;
             }
             #debug-container {
               flex-grow: 1;
@@ -110,6 +123,25 @@ function openTranslationsWindow(updateTranslationsDisplay) {
               font-weight: bold;
               color: #0078d4;
               margin-bottom: 5px;
+              display: flex;
+              align-items: center;
+            }
+            .speaker-avatar {
+              width: 24px;
+              height: 24px;
+              border-radius: 50%;
+              background-color: #0078d4;
+              margin-right: 8px;
+              display: flex;
+              align-items: center;
+              justify-content: center;
+              color: white;
+              font-size: 12px;
+              font-weight: bold;
+              overflow: hidden;
+            }
+            .utterances-container {
+              margin-top: 5px;
             }
             .utterance {
               margin-bottom: 10px;
@@ -117,10 +149,28 @@ function openTranslationsWindow(updateTranslationsDisplay) {
               background-color: #f9f9f9;
               border-radius: 5px;
               border: 1px solid #eee;
+              transition: background-color 0.3s ease, border-color 0.3s ease;
+              animation: fadeIn 0.3s ease;
             }
             .utterance.active {
               background-color: #f0f7ff;
               border-color: #0078d4;
+              animation: pulse 2s infinite;
+            }
+            @keyframes pulse {
+              0% {
+                border-color: #0078d4;
+              }
+              50% {
+                border-color: #66b0ff;
+              }
+              100% {
+                border-color: #0078d4;
+              }
+            }
+            @keyframes fadeIn {
+              from { opacity: 0; transform: translateY(5px); }
+              to { opacity: 1; transform: translateY(0); }
             }
             .utterance-text {
               font-size: 15px;
@@ -138,6 +188,9 @@ function openTranslationsWindow(updateTranslationsDisplay) {
               justify-content: space-between;
               background: white;
               border-top: 1px solid #ddd;
+              position: sticky;
+              bottom: 0;
+              z-index: 100;
             }
             button {
               padding: 8px 15px;
@@ -147,6 +200,7 @@ function openTranslationsWindow(updateTranslationsDisplay) {
               border: none;
               border-radius: 3px;
               font-weight: bold;
+              transition: background-color 0.2s ease;
             }
             button:hover {
               background-color: #106ebe;
@@ -168,6 +222,72 @@ function openTranslationsWindow(updateTranslationsDisplay) {
               background-color: #0078d4;
               color: white;
             }
+            .time-group-separator {
+              text-align: center;
+              margin: 20px 0;
+              border-bottom: 1px solid #ddd;
+              line-height: 0.1em;
+              color: #888;
+              font-size: 12px;
+            }
+            .time-group-separator span {
+              background: #fff;
+              padding: 0 10px;
+            }
+            #auto-scroll-toggle {
+              position: absolute;
+              right: 15px;
+              bottom: 60px;
+              z-index: 90;
+              display: flex;
+              align-items: center;
+              background: rgba(255,255,255,0.9);
+              padding: 5px 10px;
+              border-radius: 20px;
+              box-shadow: 0 2px 5px rgba(0,0,0,0.2);
+              cursor: pointer;
+              user-select: none;
+            }
+            .toggle-switch {
+              position: relative;
+              display: inline-block;
+              width: 40px;
+              height: 20px;
+              margin-left: 8px;
+            }
+            .toggle-switch input {
+              opacity: 0;
+              width: 0;
+              height: 0;
+            }
+            .toggle-slider {
+              position: absolute;
+              cursor: pointer;
+              top: 0;
+              left: 0;
+              right: 0;
+              bottom: 0;
+              background-color: #ccc;
+              transition: .4s;
+              border-radius: 34px;
+            }
+            .toggle-slider:before {
+              position: absolute;
+              content: "";
+              height: 16px;
+              width: 16px;
+              left: 2px;
+              bottom: 2px;
+              background-color: white;
+              transition: .4s;
+              border-radius: 50%;
+            }
+            input:checked + .toggle-slider {
+              background-color: #0078d4;
+            }
+            input:checked + .toggle-slider:before {
+              transform: translateX(20px);
+            }
           </style>
         </head>
         <body>
@@ -184,6 +304,14 @@ function openTranslationsWindow(updateTranslationsDisplay) {
           <div id="main-container">
             <div id="subtitles-container"></div>
             <div id="debug-container"></div>
+            
+            <div id="auto-scroll-toggle">
+              Auto-scroll
+              <label class="toggle-switch">
+                <input type="checkbox" id="auto-scroll-checkbox" checked>
+                <span class="toggle-slider"></span>
+              </label>
+            </div>
           </div>
           
           <div class="controls">
@@ -205,7 +333,7 @@ function openTranslationsWindow(updateTranslationsDisplay) {
         debugLog("Popup event listeners setup complete");
         
         // Force an initial update
-        updateTranslationsDisplay([], {});
+        updateTranslationsDisplay({}, {});
       }, 300);
       
       // Start checking the popup window status
@@ -226,7 +354,7 @@ function openTranslationsWindow(updateTranslationsDisplay) {
  * @param {Function} updateTranslationsDisplay - Function to update translations
  */
 function setupPopupEventListeners(updateTranslationsDisplay) {
-  if (!popupWindow || popupWindow.closed) return;
+  if (!isPopupAccessible()) return;
   
   try {
     // Tab switching
@@ -256,6 +384,9 @@ function setupPopupEventListeners(updateTranslationsDisplay) {
     if (clearBtn) {
       clearBtn.addEventListener('click', function() {
         if (window.clearAllTranslations && typeof window.clearAllTranslations === 'function') {
+          // Reset our accumulated translations
+          accumulatedTranslations = {};
+          speakerDisplayOrder = [];
           window.clearAllTranslations();
         }
       });
@@ -269,14 +400,73 @@ function setupPopupEventListeners(updateTranslationsDisplay) {
         
         const text = Array.from(subtitlesContainer.querySelectorAll('.speaker-block')).map(block => {
           const speakerNameEl = block.querySelector('.speaker-name');
-          const speaker = speakerNameEl ? speakerNameEl.textContent : 'Unknown';
+          const speaker = speakerNameEl ? speakerNameEl.textContent.trim() : 'Unknown';
           const utterances = Array.from(block.querySelectorAll('.utterance-text')).map(u => u.textContent);
           return speaker + ':\n' + utterances.join('\n');
         }).join('\n\n');
         
         popupWindow.navigator.clipboard.writeText(text)
-          .then(() => alert('Translations copied to clipboard'))
+          .then(() => {
+            // Show a temporary success message
+            const copyFeedback = popupWindow.document.createElement('div');
+            copyFeedback.textContent = 'Copied to clipboard!';
+            copyFeedback.style.position = 'fixed';
+            copyFeedback.style.bottom = '60px';
+            copyFeedback.style.left = '50%';
+            copyFeedback.style.transform = 'translateX(-50%)';
+            copyFeedback.style.backgroundColor = '#0078d4';
+            copyFeedback.style.color = 'white';
+            copyFeedback.style.padding = '8px 16px';
+            copyFeedback.style.borderRadius = '4px';
+            copyFeedback.style.zIndex = '1000';
+            copyFeedback.style.opacity = '0';
+            copyFeedback.style.transition = 'opacity 0.3s ease';
+            
+            popupWindow.document.body.appendChild(copyFeedback);
+            
+            // Fade in
+            setTimeout(() => {
+              copyFeedback.style.opacity = '1';
+            }, 10);
+            
+            // Fade out and remove
+            setTimeout(() => {
+              copyFeedback.style.opacity = '0';
+              setTimeout(() => {
+                popupWindow.document.body.removeChild(copyFeedback);
+              }, 300);
+            }, 2000);
+          })
           .catch(err => alert('Failed to copy: ' + err.message));
+      });
+    }
+    
+    // Auto-scroll toggle
+    const autoScrollCheckbox = popupWindow.document.getElementById('auto-scroll-checkbox');
+    if (autoScrollCheckbox) {
+      autoScrollCheckbox.addEventListener('change', function() {
+        const shouldAutoScroll = autoScrollCheckbox.checked;
+        
+        if (shouldAutoScroll && subtitlesContainer) {
+          // If turned on, immediately scroll to bottom
+          subtitlesContainer.scrollTop = subtitlesContainer.scrollHeight;
+        }
+      });
+    }
+    
+    // Handle manual scrolling to disable auto-scroll
+    if (subtitlesContainer) {
+      subtitlesContainer.addEventListener('wheel', function() {
+        const autoScrollCheckbox = popupWindow.document.getElementById('auto-scroll-checkbox');
+        if (autoScrollCheckbox) {
+          // Determine if user scrolled away from bottom
+          const isNearBottom = subtitlesContainer.scrollHeight - subtitlesContainer.scrollTop - subtitlesContainer.clientHeight < 50;
+          
+          // Only turn off auto-scroll if user scrolls away from bottom
+          if (!isNearBottom && autoScrollCheckbox.checked) {
+            autoScrollCheckbox.checked = false;
+          }
+        }
       });
     }
     
@@ -365,12 +555,35 @@ function stopPopupCheck() {
   }
 }
 
-// Store active utterances by ID to avoid duplicates
-let activeUtterancesById = {};
+/**
+ * Create avatar for speaker
+ * @param {string} speakerName - Speaker's name
+ * @returns {HTMLElement} - Avatar element
+ */
+function createSpeakerAvatar(speakerName) {
+  const avatar = popupWindow.document.createElement('div');
+  avatar.className = 'speaker-avatar';
+  
+  // Generate a consistent color based on the speaker name
+  const nameHash = Array.from(speakerName).reduce((acc, char) => acc + char.charCodeAt(0), 0);
+  const hue = nameHash % 360;
+  avatar.style.backgroundColor = `hsl(${hue}, 70%, 45%)`;
+  
+  // Get initials (up to 2 characters)
+  const initials = speakerName
+    .split(/\s+/)
+    .map(word => word.charAt(0).toUpperCase())
+    .slice(0, 2)
+    .join('');
+  
+  avatar.textContent = initials || '?';
+  
+  return avatar;
+}
 
 /**
- * Update the translation display in the popup
- * @param {Array} translatedUtterances - Array of translated utterances
+ * Update the translation display in the popup with accumulated translations
+ * @param {Object} translatedUtterances - Map of speaker IDs to their latest utterances
  * @param {Object} activeSpeakers - Map of active speakers
  */
 function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
@@ -383,166 +596,194 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
     const subtitlesContainer = popupWindow.document.getElementById('subtitles-container');
     if (!subtitlesContainer) return;
     
-    // Check if we're at the bottom of the container (for auto-scrolling)
-    const isAtBottom = subtitlesContainer.scrollHeight - subtitlesContainer.scrollTop - subtitlesContainer.clientHeight < 50;
+    // Check if auto-scroll is enabled
+    const autoScrollCheckbox = popupWindow.document.getElementById('auto-scroll-checkbox');
+    const shouldAutoScroll = autoScrollCheckbox && autoScrollCheckbox.checked;
     
-    // Cache existing blocks to avoid unnecessary DOM operations
-    const existingBlocks = {};
-    const speakerBlocks = Array.from(subtitlesContainer.querySelectorAll('.speaker-block'));
-    
-    speakerBlocks.forEach(block => {
-      const speakerNameEl = block.querySelector('.speaker-name');
-      if (speakerNameEl) {
-        existingBlocks[speakerNameEl.dataset.speakerId] = block;
-      }
-    });
-    
-    // Process finalized utterances
-    for (const utterance of translatedUtterances) {
-      // Store the utterance by ID to avoid duplicates
-      if (!activeUtterancesById[utterance.id]) {
-        activeUtterancesById[utterance.id] = utterance;
+    // Process finalized utterances and add them to accumulatedTranslations
+    for (const speakerId in translatedUtterances) {
+      const utterance = translatedUtterances[speakerId];
+      if (utterance) {
+        // Initialize speaker object if needed
+        if (!accumulatedTranslations[speakerId]) {
+          accumulatedTranslations[speakerId] = {
+            speaker: utterance.speaker,
+            utterances: {}
+          };
+          
+          // Add to display order if new
+          if (!speakerDisplayOrder.includes(speakerId)) {
+            speakerDisplayOrder.push(speakerId);
+          }
+        }
+        
+        // Update or add the utterance
+        accumulatedTranslations[speakerId].utterances[utterance.id] = {
+          ...utterance,
+          active: false // Finalized utterances are not active
+        };
       }
     }
     
-    // Process active speakers and add them to the tracking
+    // Update active utterances (they may override finalized ones)
     for (const speakerId in activeSpeakers) {
-      const activeSpeech = activeSpeakers[speakerId];
+      const speaker = activeSpeakers[speakerId];
       
-      // Create a unique ID for this active utterance
-      const utteranceId = `active_${speakerId}_${activeSpeech.utteranceId}`;
+      // Initialize speaker object if needed
+      if (!accumulatedTranslations[speakerId]) {
+        accumulatedTranslations[speakerId] = {
+          speaker: speaker.speaker,
+          utterances: {}
+        };
+        
+        // Add to display order if new
+        if (!speakerDisplayOrder.includes(speakerId)) {
+          speakerDisplayOrder.push(speakerId);
+        }
+      }
       
-      // Store or update in our tracking
-      activeUtterancesById[utteranceId] = {
-        id: utteranceId,
-        speaker: activeSpeech.speaker,
+      // Update or add the active utterance
+      accumulatedTranslations[speakerId].utterances[speaker.utteranceId] = {
+        id: speaker.utteranceId,
+        speaker: speaker.speaker,
         speakerId: speakerId,
-        original: activeSpeech.fullText,
-        translated: activeSpeech.translatedText || "Translating...",
+        original: speaker.fullText,
+        translated: speaker.translatedText || "Translating...",
         timestamp: new Date().toLocaleTimeString(),
         active: true
       };
     }
     
-    // Create a map to organize by speaker
-    const speakerUtterances = {};
+    // Create a fragment to efficiently build the DOM
+    const fragment = popupWindow.document.createDocumentFragment();
     
-    // Organize all utterances by speaker
-    for (const utteranceId in activeUtterancesById) {
-      const utterance = activeUtterancesById[utteranceId];
+    // Process speakers in the display order
+    for (const speakerId of speakerDisplayOrder) {
+      if (!accumulatedTranslations[speakerId]) continue;
       
-      // Skip if it's an active utterance but not in activeSpeakers anymore
-      if (utterance.active && !activeSpeakers[utterance.speakerId]) {
-        delete activeUtterancesById[utteranceId];
-        continue;
-      }
+      const speakerData = accumulatedTranslations[speakerId];
+      const utterances = Object.values(speakerData.utterances);
       
-      if (!speakerUtterances[utterance.speakerId]) {
-        speakerUtterances[utterance.speakerId] = {
-          name: utterance.speaker,
-          id: utterance.speakerId,
-          utterances: []
-        };
-      }
+      // Skip if no utterances
+      if (utterances.length === 0) continue;
       
-      speakerUtterances[utterance.speakerId].utterances.push(utterance);
-    }
-    
-    // Sort each speaker's utterances by ID (which includes timestamp)
-    for (const speakerId in speakerUtterances) {
-      speakerUtterances[speakerId].utterances.sort((a, b) => {
-        // Extract timestamps from utterance IDs or use actual timestamps
-        const getTime = (u) => {
-          if (u.id.startsWith('active_')) {
-            return parseInt(u.id.split('_')[2]);
-          } else {
-            return parseInt(u.id);
-          }
-        };
-        return getTime(a) - getTime(b);
-      });
-    }
-    
-    // Now update the DOM - first remove any speakers that are no longer present
-    for (const speakerId in existingBlocks) {
-      if (!speakerUtterances[speakerId]) {
-        subtitlesContainer.removeChild(existingBlocks[speakerId]);
-        delete existingBlocks[speakerId];
-      }
-    }
-    
-    // Create or update speaker blocks
-    for (const speakerId in speakerUtterances) {
-      const speakerData = speakerUtterances[speakerId];
-      let speakerBlock = existingBlocks[speakerId];
+      // Sort utterances by ID (which is timestamp-based)
+      utterances.sort((a, b) => a.id - b.id);
       
-      // Create new block if it doesn't exist
-      if (!speakerBlock) {
+      // Get or create speaker block
+      let speakerBlock = popupWindow.document.getElementById(`speaker-${speakerId}`);
+      const isNewSpeakerBlock = !speakerBlock;
+      
+      if (isNewSpeakerBlock) {
         speakerBlock = popupWindow.document.createElement('div');
         speakerBlock.className = 'speaker-block';
+        speakerBlock.id = `speaker-${speakerId}`;
+        speakerBlock.dataset.speakerId = speakerId;
         
+        // Create speaker name header with avatar
         const speakerName = popupWindow.document.createElement('div');
         speakerName.className = 'speaker-name';
-        speakerName.textContent = speakerData.name;
-        speakerName.dataset.speakerId = speakerId;
+        
+        // Add avatar
+        const avatar = createSpeakerAvatar(speakerData.speaker);
+        speakerName.appendChild(avatar);
+        
+        // Add name text
+        const nameText = popupWindow.document.createTextNode(speakerData.speaker);
+        speakerName.appendChild(nameText);
         
         speakerBlock.appendChild(speakerName);
-        subtitlesContainer.appendChild(speakerBlock);
+        
+        // Create utterances container
+        const utterancesContainer = popupWindow.document.createElement('div');
+        utterancesContainer.className = 'utterances-container';
+        utterancesContainer.id = `utterances-${speakerId}`;
+        speakerBlock.appendChild(utterancesContainer);
       }
       
-      // Get existing utterances in this block to avoid recreating them
-      const existingUtterances = {};
-      Array.from(speakerBlock.querySelectorAll('.utterance')).forEach(utteranceEl => {
-        existingUtterances[utteranceEl.dataset.utteranceId] = utteranceEl;
+      // Get utterances container
+      const utterancesContainer = speakerBlock.querySelector(`.utterances-container`);
+      
+      // Track existing utterance elements
+      const existingUtteranceElements = new Set();
+      Array.from(utterancesContainer.querySelectorAll('.utterance')).forEach(el => {
+        existingUtteranceElements.add(el.dataset.utteranceId);
       });
       
-      // Now update or create utterance elements
-      for (const utterance of speakerData.utterances) {
-        let utteranceEl = existingUtterances[utterance.id];
+      // Process utterances
+      utterances.forEach(utterance => {
+        const utteranceId = utterance.id;
         
-        // Create or update utterance
-        if (!utteranceEl) {
+        // Check if utterance element already exists
+        let utteranceEl = utterancesContainer.querySelector(`.utterance[data-utterance-id="${utteranceId}"]`);
+        const isNewUtterance = !utteranceEl;
+        
+        if (isNewUtterance) {
+          // Create new utterance element
           utteranceEl = popupWindow.document.createElement('div');
           utteranceEl.className = utterance.active ? 'utterance active' : 'utterance';
-          utteranceEl.dataset.utteranceId = utterance.id;
+          utteranceEl.dataset.utteranceId = utteranceId;
           
+          // Utterance text
           const textDiv = popupWindow.document.createElement('div');
           textDiv.className = 'utterance-text';
+          textDiv.textContent = utterance.translated || "";
           utteranceEl.appendChild(textDiv);
           
-          const timestampDiv = popupWindow.document.createElement('div');
-          timestampDiv.className = 'timestamp';
-          utteranceEl.appendChild(timestampDiv);
+          // Timestamp
+          const timeDiv = popupWindow.document.createElement('div');
+          timeDiv.className = 'timestamp';
+          timeDiv.textContent = utterance.timestamp || "";
+          utteranceEl.appendChild(timeDiv);
           
-          speakerBlock.appendChild(utteranceEl);
-        }
-        
-        // Always update the content to ensure it's current
-        const textDiv = utteranceEl.querySelector('.utterance-text');
-        if (textDiv) textDiv.textContent = utterance.translated;
-        
-        const timestampDiv = utteranceEl.querySelector('.timestamp');
-        if (timestampDiv) timestampDiv.textContent = utterance.timestamp;
-        
-        // Update active state
-        if (utterance.active) {
-          utteranceEl.classList.add('active');
+          // Add to container (at the correct position by time)
+          let inserted = false;
+          Array.from(utterancesContainer.querySelectorAll('.utterance')).some(existingUtterance => {
+            const existingId = parseInt(existingUtterance.dataset.utteranceId);
+            const currentId = parseInt(utteranceId);
+            
+            if (existingId > currentId) {
+              utterancesContainer.insertBefore(utteranceEl, existingUtterance);
+              inserted = true;
+              return true;
+            }
+            return false;
+          });
+          
+          // If not inserted (i.e., it's the newest), append to end
+          if (!inserted) {
+            utterancesContainer.appendChild(utteranceEl);
+          }
         } else {
-          utteranceEl.classList.remove('active');
+          // Update existing utterance
+          const textDiv = utteranceEl.querySelector('.utterance-text');
+          if (textDiv) {
+            textDiv.textContent = utterance.translated || "";
+          }
+          
+          // Update active state
+          if (utterance.active) {
+            utteranceEl.classList.add('active');
+          } else {
+            utteranceEl.classList.remove('active');
+          }
+          
+          // Add to our tracking set since we're keeping this element
+          existingUtteranceElements.add(utteranceId);
         }
-        
-        // Remove from tracking so we don't delete it later
-        delete existingUtterances[utterance.id];
-      }
+      });
       
-      // Remove any utterance elements that are no longer needed
-      for (const utteranceId in existingUtterances) {
-        speakerBlock.removeChild(existingUtterances[utteranceId]);
+      // If new speaker block, add to fragment
+      if (isNewSpeakerBlock) {
+        fragment.appendChild(speakerBlock);
       }
     }
     
-    // Scroll to bottom if we were already there
-    if (isAtBottom) {
+    // Append all new speaker blocks to the container
+    subtitlesContainer.appendChild(fragment);
+    
+    // Auto-scroll if enabled
+    if (shouldAutoScroll) {
       subtitlesContainer.scrollTop = subtitlesContainer.scrollHeight;
     }
     
@@ -550,6 +791,7 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
     updateDebugLogs();
   } catch (error) {
     console.error("Error updating translations display:", error);
+    debugLog(`Error updating display: ${error.message}`);
   }
 }
 
@@ -572,6 +814,14 @@ function setTranslationStatus(isActive) {
 }
 
 /**
+ * Clear all accumulated translations
+ */
+function clearAccumulatedTranslations() {
+  accumulatedTranslations = {};
+  speakerDisplayOrder = [];
+}
+
+/**
  * Close popup window
  */
 function closePopupWindow() {
@@ -584,7 +834,7 @@ function closePopupWindow() {
   }
   
   popupWindow = null;
-  activeUtterancesById = {}; // Clear the utterance tracking
+  clearAccumulatedTranslations();
 }
 
 export {
@@ -593,5 +843,6 @@ export {
   updateDebugLogs,
   setTranslationStatus,
   stopPopupCheck,
-  closePopupWindow
+  closePopupWindow,
+  clearAccumulatedTranslations
 };

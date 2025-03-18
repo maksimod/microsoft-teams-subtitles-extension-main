@@ -19,6 +19,12 @@ import {
   getTranslatedUtterances,
   resetKnownSubtitles
 } from './subtitle-processor.js';
+import {
+  initializeDisplay as initInlineDisplay,
+  updateDisplay as updateInlineDisplay,
+  setDisplayStatus as setInlineDisplayStatus,
+  clearDisplay as clearInlineDisplay
+} from './direct-content-display.js';
 
 // Wrap the entire script in a self-executing function to avoid global scope pollution
 (async function () {
@@ -30,6 +36,7 @@ import {
   let inputLang = Config.DEFAULT_INPUT_LANG;
   let outputLang = Config.DEFAULT_OUTPUT_LANG;
   let isTranslationActive = false;
+  let displayMode = 'popup'; // 'popup' or 'inline'
   
   // Reference to the MutationObserver
   let observer = null;
@@ -56,6 +63,7 @@ import {
     clearSubtitleData();
     clearDebugLogs();
     clearTranslationTimers();
+    clearInlineDisplay();
     
     debugLog("All translations cleared");
   }
@@ -118,13 +126,22 @@ import {
     
     isTranslationActive = true;
     
-    debugLog(`Starting translation with input: ${inputLang}, output: ${outputLang}`);
+    debugLog(`Starting translation with input: ${inputLang}, output: ${outputLang}, display: ${displayMode}`);
     
-    // Open the translations window
-    openTranslationsWindow(updateTranslationsDisplay);
+    // Initialize displays based on mode
+    if (displayMode === 'popup' || displayMode === 'both') {
+      // Open the translations window
+      openTranslationsWindow(updateTranslationsDisplay);
+      
+      // Update translation status
+      setTranslationStatus(true);
+    }
     
-    // Update translation status
-    setTranslationStatus(true);
+    if (displayMode === 'inline' || displayMode === 'both') {
+      // Initialize inline display
+      initInlineDisplay();
+      setInlineDisplayStatus(true);
+    }
     
     // Only observe the caption container instead of the entire body
     const findCaptionContainer = () => {
@@ -132,7 +149,9 @@ import {
       const possibleContainers = [
         document.querySelector('[role="dialog"][aria-label*="caption"], [data-tid="meetup-captions-container"]'),
         document.querySelector('[data-tid="closed-caption-container"]'),
-        document.querySelector('.cc-container')
+        document.querySelector('.cc-container'),
+        document.querySelector('.ts-captions-container'),
+        document.querySelector('[class*="caption-container"]')
       ];
       
       return possibleContainers.find(el => el);
@@ -168,9 +187,14 @@ import {
     // Add a safety check to periodically ensure everything is still working
     startSafetyChecks();
     
-    // Force an immediate update
+    // Force an immediate update for both display methods
     setTimeout(() => {
-      updateTranslationsDisplay(getTranslatedUtterances(), getActiveSpeakers());
+      if (displayMode === 'popup' || displayMode === 'both') {
+        updateTranslationsDisplay(getTranslatedUtterances(), getActiveSpeakers());
+      }
+      if (displayMode === 'inline' || displayMode === 'both') {
+        updateInlineDisplay(getTranslatedUtterances(), getActiveSpeakers());
+      }
     }, 100);
     
     return { status: "success" };
@@ -197,8 +221,8 @@ import {
             debounceProcessSubtitles(isTranslationActive, inputLang, outputLang);
           });
           
-          // Find caption container again
-          const captionContainer = document.querySelector('[data-tid="closed-caption-container"]');
+          // Find caption container again using the improved selector list
+          const captionContainer = findCaptionContainer();
           
           // Reattach it
           if (captionContainer) {
@@ -225,12 +249,21 @@ import {
         }
         
         // Update the translations display to make sure it's in sync
-        updateTranslationsDisplay(
-          getTranslatedUtterances(),
-          getActiveSpeakers()
-        );
+        if (displayMode === 'popup' || displayMode === 'both') {
+          updateTranslationsDisplay(
+            getTranslatedUtterances(),
+            getActiveSpeakers()
+          );
+        }
+        
+        if (displayMode === 'inline' || displayMode === 'both') {
+          updateInlineDisplay(
+            getTranslatedUtterances(),
+            getActiveSpeakers()
+          );
+        }
       }
-    }, 30000); // Check every 30 seconds
+    }, Config.OBSERVER_UPDATE_INTERVAL); // Check every 30 seconds
   }
   
   // Function to stop translation
@@ -248,8 +281,19 @@ import {
       // Clear all translation timers
       clearTranslationTimers();
       
-      // Stop popup check
-      stopPopupCheck();
+      // Update displays based on mode
+      if (displayMode === 'popup' || displayMode === 'both') {
+        // Stop popup check
+        stopPopupCheck();
+        
+        // Update status in popup
+        setTranslationStatus(false);
+      }
+      
+      if (displayMode === 'inline' || displayMode === 'both') {
+        // Hide inline display
+        setInlineDisplayStatus(false);
+      }
       
       // Stop safety checks
       if (safetyCheckTimer) {
@@ -257,13 +301,24 @@ import {
         safetyCheckTimer = null;
       }
       
-      // Update status in popup
-      setTranslationStatus(false);
-      
       return { status: "success" };
     }
     
     return { status: "error", message: "Translation not active" };
+  }
+  
+  // Helper function to find caption container
+  function findCaptionContainer() {
+    // Try to find the caption container element
+    const possibleContainers = [
+      document.querySelector('[role="dialog"][aria-label*="caption"], [data-tid="meetup-captions-container"]'),
+      document.querySelector('[data-tid="closed-caption-container"]'),
+      document.querySelector('.cc-container'),
+      document.querySelector('.ts-captions-container'),
+      document.querySelector('[class*="caption-container"]')
+    ];
+    
+    return possibleContainers.find(el => el);
   }
   
   // Listen for messages from the popup
@@ -272,6 +327,11 @@ import {
       // Update language settings
       inputLang = message.inputLang || Config.DEFAULT_INPUT_LANG;
       outputLang = message.outputLang || Config.DEFAULT_OUTPUT_LANG;
+      
+      // Update display mode if provided
+      if (message.displayMode) {
+        displayMode = message.displayMode;
+      }
       
       // Start translation
       startTranslation().then(result => {
@@ -292,8 +352,42 @@ import {
       sendResponse({
         isActive: isTranslationActive,
         inputLang: inputLang,
-        outputLang: outputLang
+        outputLang: outputLang,
+        displayMode: displayMode
       });
+      return true;
+    } else if (message.action === "setDisplayMode") {
+      // Update display mode
+      displayMode = message.displayMode || 'popup';
+      
+      // Update displays based on new mode
+      if (isTranslationActive) {
+        if (displayMode === 'popup' || displayMode === 'both') {
+          openTranslationsWindow(updateTranslationsDisplay);
+          setTranslationStatus(true);
+        } else {
+          closePopupWindow();
+        }
+        
+        if (displayMode === 'inline' || displayMode === 'both') {
+          initInlineDisplay();
+          setInlineDisplayStatus(true);
+        } else {
+          setInlineDisplayStatus(false);
+        }
+        
+        // Force an immediate update
+        setTimeout(() => {
+          if (displayMode === 'popup' || displayMode === 'both') {
+            updateTranslationsDisplay(getTranslatedUtterances(), getActiveSpeakers());
+          }
+          if (displayMode === 'inline' || displayMode === 'both') {
+            updateInlineDisplay(getTranslatedUtterances(), getActiveSpeakers());
+          }
+        }, 100);
+      }
+      
+      sendResponse({ status: "success", displayMode: displayMode });
       return true;
     }
   });
@@ -325,10 +419,20 @@ import {
     // Set new interval
     updateDisplayInterval = setInterval(() => {
       if (isTranslationActive) {
-        updateTranslationsDisplay(
-          getTranslatedUtterances(),
-          getActiveSpeakers()
-        );
+        // Update displays based on mode
+        if (displayMode === 'popup' || displayMode === 'both') {
+          updateTranslationsDisplay(
+            getTranslatedUtterances(),
+            getActiveSpeakers()
+          );
+        }
+        
+        if (displayMode === 'inline' || displayMode === 'both') {
+          updateInlineDisplay(
+            getTranslatedUtterances(),
+            getActiveSpeakers()
+          );
+        }
       }
     }, 250); // Update 4 times per second
   }

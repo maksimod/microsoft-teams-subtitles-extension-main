@@ -9,19 +9,125 @@ import {
 import { updateTranslationsDisplay } from './popup-manager.js';
 
 // Speech detection variables
-let allCapturedText = []; // Array of all text segments in this session
 let activeSpeakers = {}; // Map of active speakers and their current utterances
 let knownSubtitles = new Set(); // Set of known subtitle texts to avoid duplicates
-let translatedUtterances = []; // Fully translated utterances
+let translatedUtterances = {}; // Map of speaker ID to their latest utterance
 let isClearing = false; // Flag to prevent clearing and adding simultaneously
-let lastProcessedTime = 0; // Track when we last processed subtitles to avoid processing too frequently
+let lastProcessedTime = 0; // Track when we last processed subtitles
+
+// Speaker identification cache
+let speakerNameCache = {}; // Cache speaker names by DOM elements
+let lastFullTextBySpeaker = {}; // Track last complete text by speaker to avoid duplicates
+
+// Timers for delaying translations
+let translationTimers = {};
+
+// Minimum length for translation
+const MIN_LENGTH_FOR_TRANSLATION = 2;
 
 /**
  * Reset known subtitles to avoid processing past items
  */
 function resetKnownSubtitles() {
   knownSubtitles.clear();
+  lastFullTextBySpeaker = {}; // Reset last texts as well
   debugLog("Known subtitles reset");
+}
+
+/**
+ * Enhanced speaker detection from Teams UI
+ * @returns {Object} Speaker information with name and possible avatar URL
+ */
+function detectSpeaker() {
+  try {
+    let speakerName = "Unknown";
+    let speakerAvatar = null;
+    
+    // Try multiple selectors to find the speaker
+    const speakerSelectors = [
+      // Primary Teams caption selector
+      '[data-tid="closed-caption-activity-name"]',
+      // Alternative selector for newer versions
+      '.ts-captions-container .ts-captions-speaker',
+      // Fallback for other versions
+      '[aria-label*="caption"] .caption-speaker',
+      '.caption-container .caption-speaker',
+      // Extremely generic fallback - last resort
+      '[class*="caption"] [class*="speaker"]'
+    ];
+    
+    // Try each selector
+    for (const selector of speakerSelectors) {
+      const speakerElement = document.querySelector(selector);
+      if (speakerElement && speakerElement.innerText.trim()) {
+        speakerName = speakerElement.innerText.trim();
+        break;
+      }
+    }
+    
+    // Try to find avatar (profile picture)
+    const avatarSelectors = [
+      // Various possible selectors for avatar images
+      '[data-tid="closed-caption-activity-avatar"] img',
+      '.ts-captions-container .ts-captions-avatar img',
+      '[class*="avatar-image"]',
+      '.call-participant-avatar img'
+    ];
+    
+    for (const selector of avatarSelectors) {
+      const avatarElement = document.querySelector(selector);
+      if (avatarElement && avatarElement.src) {
+        speakerAvatar = avatarElement.src;
+        break;
+      }
+    }
+    
+    // If we still don't have a speaker name, try looking at data attributes
+    if (speakerName === "Unknown") {
+      const possibleElements = document.querySelectorAll('[aria-label*="is speaking"], [data-tid*="participant"]');
+      for (const el of possibleElements) {
+        const ariaLabel = el.getAttribute('aria-label');
+        if (ariaLabel && ariaLabel.includes('speaking')) {
+          // Extract name from aria-label like "John Doe is speaking"
+          const match = ariaLabel.match(/(.*?)\s+is speaking/i);
+          if (match && match[1]) {
+            speakerName = match[1].trim();
+            break;
+          }
+        }
+        
+        // Check data attributes that might contain speaker info
+        const dataTid = el.getAttribute('data-tid');
+        if (dataTid && dataTid.includes('participant')) {
+          // The element itself might have the name or a child element might
+          if (el.innerText && el.innerText.trim()) {
+            speakerName = el.innerText.trim();
+            break;
+          }
+          
+          // Check for name in children
+          const nameEl = el.querySelector('[data-tid*="name"], [class*="name"]');
+          if (nameEl && nameEl.innerText.trim()) {
+            speakerName = nameEl.innerText.trim();
+            break;
+          }
+        }
+      }
+    }
+    
+    // Clean up speaker name (remove role indicators)
+    speakerName = speakerName
+      .replace(/\(organizer\)/i, '')
+      .replace(/\(presenter\)/i, '')
+      .replace(/\(attendee\)/i, '')
+      .replace(/\(guest\)/i, '')
+      .trim();
+    
+    return { name: speakerName, avatar: speakerAvatar };
+  } catch (error) {
+    console.error("Error detecting speaker:", error);
+    return { name: "Unknown", avatar: null };
+  }
 }
 
 /**
@@ -38,15 +144,27 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
   
   // Rate limit processing to avoid performance issues
   const now = Date.now();
-  if (now - lastProcessedTime < 150) { // Don't process more often than every 150ms
+  if (now - lastProcessedTime < Config.DEBOUNCE_DELAY) {
     return;
   }
   lastProcessedTime = now;
 
-  // Select all subtitle containers
-  const subtitleContainers = document.querySelectorAll(
-    'span[dir="auto"][data-tid="closed-caption-text"]'
-  );
+  // Select all subtitle containers - try multiple selectors to be more robust
+  const subtitleSelectors = [
+    'span[dir="auto"][data-tid="closed-caption-text"]',
+    '.ts-captions-container .ts-captions-text',
+    '.caption-text',
+    '[class*="caption"] [class*="text"]'
+  ];
+  
+  let subtitleContainers = [];
+  for (const selector of subtitleSelectors) {
+    const elements = document.querySelectorAll(selector);
+    if (elements.length > 0) {
+      subtitleContainers = elements;
+      break;
+    }
+  }
 
   if (subtitleContainers.length === 0) {
     return;
@@ -55,6 +173,10 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
   try {
     // Use a map to collect unique text by speaker
     const currentTexts = new Map();
+    
+    // Detect current speaker first
+    const { name: speakerName, avatar: speakerAvatar } = detectSpeaker();
+    const speakerId = getSpeakerId(speakerName);
     
     // Process each subtitle container
     for (const subtitleContainer of subtitleContainers) {
@@ -65,26 +187,11 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
         continue;
       }
       
-      // Try to detect the current speaker
-      let speakerElement = null;
-      let speakerName = "Unknown";
-      
-      try {
-        // Look for speaker name in various possible elements
-        speakerElement = document.querySelector('[data-tid="closed-caption-activity-name"]');
-        if (speakerElement) {
-          speakerName = speakerElement.innerText.trim() || "Unknown";
-        }
-      } catch (error) {
-        console.error("Error detecting speaker:", error);
-      }
-      
-      const speakerId = getSpeakerId(speakerName);
-      
       // Add to the current texts map
       currentTexts.set(speakerId, {
         text,
-        speakerName
+        speakerName,
+        speakerAvatar
       });
       
       // Add to known subtitles set to avoid duplicates
@@ -93,23 +200,29 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
     
     // Now process each unique speaker's text
     for (const [speakerId, data] of currentTexts.entries()) {
-      const { text, speakerName } = data;
+      const { text, speakerName, speakerAvatar } = data;
       
-      // Add to all captured text
-      allCapturedText.push(text);
+      // Skip if this text is identical to the last complete utterance for this speaker
+      if (lastFullTextBySpeaker[speakerId] === text) {
+        continue;
+      }
       
       debugLog(`Detected subtitle from ${speakerName}: "${text}"`);
       
       // Check if this is a continued speech or a new one
-      if (activeSpeakers[speakerId] && isContinuationOfSpeech(activeSpeakers, speakerId, text)) {
-        // Continuation of current speech
+      if (activeSpeakers[speakerId]) {
         // Update the time of the last segment
-        activeSpeakers[speakerId].lastTime = Date.now();
+        activeSpeakers[speakerId].lastTime = now;
         
-        // Add this segment to the segments array if it's not already there
-        const segments = activeSpeakers[speakerId].segments;
-        if (!segments.includes(text)) {
-          segments.push(text);
+        // Update the full text - use the newest, most complete text
+        if (text.length > activeSpeakers[speakerId].fullText.length) {
+          activeSpeakers[speakerId].fullText = text;
+          lastFullTextBySpeaker[speakerId] = text;
+          
+          // Also update avatar if available
+          if (speakerAvatar && !activeSpeakers[speakerId].avatar) {
+            activeSpeakers[speakerId].avatar = speakerAvatar;
+          }
         }
         
         // Reset the finalization timer
@@ -120,37 +233,29 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
           finalizeSpeech(speakerId, inputLang, outputLang);
         }, Config.SPEECH_SEGMENT_TIMEOUT));
         
-        // Update the full text - join with spaces but avoid duplicate content
-        activeSpeakers[speakerId].fullText = segments.join(' ');
-        
-        // Translate the updated text
-        translateAndUpdateUtterance(speakerId, inputLang, outputLang);
+        // Schedule translation with delay
+        scheduleTranslation(speakerId, inputLang, outputLang);
       } else {
-        // This is a new speech or from a different speaker
-        
-        // If there was an active speech from this speaker, finalize it
-        if (activeSpeakers[speakerId]) {
-          finalizeSpeech(speakerId, inputLang, outputLang);
-        }
-        
-        // Create a new active speech entry
+        // This is a new speech
         activeSpeakers[speakerId] = {
           speaker: speakerName,
-          segments: [text],
           fullText: text,
-          lastTime: Date.now(),
-          translatedText: "Translating...", // Initialize with a message rather than null
-          utteranceId: Date.now().toString(),
-          active: true
+          lastTime: now,
+          translatedText: "Translating...",
+          utteranceId: now.toString(),
+          active: true,
+          avatar: speakerAvatar
         };
+        
+        lastFullTextBySpeaker[speakerId] = text;
         
         // Set a finalization timer
         setActiveTimerForSpeaker(speakerId, 'finalize', setTimeout(() => {
           finalizeSpeech(speakerId, inputLang, outputLang);
         }, Config.SPEECH_SEGMENT_TIMEOUT));
         
-        // Start translation for this new segment
-        translateAndUpdateUtterance(speakerId, inputLang, outputLang);
+        // Schedule translation with delay
+        scheduleTranslation(speakerId, inputLang, outputLang);
       }
     }
     
@@ -162,6 +267,25 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
     console.error("Error processing subtitles:", error);
     debugLog(`Subtitle processing error: ${error.message}`);
   }
+}
+
+/**
+ * Schedule translation with delay
+ * @param {string} speakerId - Speaker ID
+ * @param {string} inputLang - Source language
+ * @param {string} outputLang - Target language
+ */
+function scheduleTranslation(speakerId, inputLang, outputLang) {
+  // Cancel previous scheduled translation
+  if (translationTimers[speakerId]) {
+    clearTimeout(translationTimers[speakerId]);
+  }
+  
+  // Schedule new translation after delay
+  translationTimers[speakerId] = setTimeout(() => {
+    translateAndUpdateUtterance(speakerId, inputLang, outputLang);
+    delete translationTimers[speakerId];
+  }, Config.TRANSLATION_THROTTLE);
 }
 
 /**
@@ -177,27 +301,39 @@ async function translateAndUpdateUtterance(speakerId, inputLang, outputLang) {
   const textToTranslate = utterance.fullText;
   
   // Skip translating very short text
-  if (textToTranslate.length < 1) {
+  if (textToTranslate.length < MIN_LENGTH_FOR_TRANSLATION) {
     utterance.translatedText = "...";
     updateTranslationsDisplay(translatedUtterances, activeSpeakers);
     return;
   }
   
+  debugLog(`Translating for ${speakerId}: ${textToTranslate.substring(0, 40)}...`);
+  
   // Translate the text
   const translatedText = await translateText(speakerId, textToTranslate, inputLang, outputLang);
   
-  // If translation was throttled, it will return null and be handled later
+  // If translation was throttled or failed, it will return null
   if (translatedText === null) return;
   
-  // If this speaker is still active and this is still the current utterance
-  if (activeSpeakers[speakerId] && activeSpeakers[speakerId].utteranceId === utterance.utteranceId) {
-    // Always set the translated text, even if it failed
+  // If this speaker is still active
+  if (activeSpeakers[speakerId]) {
+    // Set the translated text
     activeSpeakers[speakerId].translatedText = translatedText || "Translating...";
     
-    // Log the partial translation
-    debugLog(`Updated active utterance: "${
-      (activeSpeakers[speakerId].translatedText || "").substring(0, 40)
-    }..."`);
+    // Log the translation
+    debugLog(`Translation complete: ${(translatedText || "").substring(0, 40)}...`);
+    
+    // Update our map of translated utterances
+    updateTranslatedUtterancesMap(speakerId, {
+      id: activeSpeakers[speakerId].utteranceId,
+      speaker: activeSpeakers[speakerId].speaker,
+      speakerId: speakerId,
+      original: activeSpeakers[speakerId].fullText,
+      translated: translatedText,
+      timestamp: new Date().toLocaleTimeString(),
+      active: true,
+      avatar: activeSpeakers[speakerId].avatar
+    });
     
     // Immediately update the display to show progress
     updateTranslationsDisplay(translatedUtterances, activeSpeakers);
@@ -205,29 +341,13 @@ async function translateAndUpdateUtterance(speakerId, inputLang, outputLang) {
 }
 
 /**
- * Find and replace an existing finalized utterance, or add a new one
- * @param {object} utterance - The utterance to add or update
+ * Update the map of translated utterances
+ * @param {string} speakerId - Speaker ID
+ * @param {object} utterance - Utterance object
  */
-function addOrUpdateUtterance(utterance) {
-  // Try to find an existing utterance from the same speaker
-  const existingIndex = translatedUtterances.findIndex(u => 
-    u.speakerId === utterance.speakerId && 
-    u.id !== utterance.id // Not the same utterance
-  );
-  
-  if (existingIndex >= 0) {
-    // Replace the existing utterance instead of adding a new one
-    translatedUtterances[existingIndex] = utterance;
-    debugLog(`Updated existing utterance from ${utterance.speaker}`);
-  } else {
-    // Add as a new utterance
-    translatedUtterances.push(utterance);
-    
-    // Keep array size manageable
-    if (translatedUtterances.length > Config.MAX_STORED_UTTERANCES) {
-      translatedUtterances = translatedUtterances.slice(-Config.MAX_STORED_UTTERANCES);
-    }
-  }
+function updateTranslatedUtterancesMap(speakerId, utterance) {
+  // Just replace the current utterance for this speaker
+  translatedUtterances[speakerId] = utterance;
 }
 
 /**
@@ -242,13 +362,19 @@ async function finalizeSpeech(speakerId, inputLang, outputLang) {
   // Get the final active utterance
   const utterance = activeSpeakers[speakerId];
   
-  // If we haven't translated it yet or the translation failed, try once more
+  // Cancel any pending translation
+  if (translationTimers[speakerId]) {
+    clearTimeout(translationTimers[speakerId]);
+    delete translationTimers[speakerId];
+  }
+  
+  // If we haven't translated it yet, try once more
   if (!utterance.translatedText || utterance.translatedText === "..." || utterance.translatedText === "Translating...") {
     const translatedText = await translateText(speakerId, utterance.fullText, inputLang, outputLang);
     if (translatedText) {
       utterance.translatedText = translatedText;
     } else {
-      utterance.translatedText = "Translating...";
+      utterance.translatedText = "[Translation unavailable]";
     }
   }
   
@@ -262,26 +388,38 @@ async function finalizeSpeech(speakerId, inputLang, outputLang) {
       original: utterance.fullText,
       translated: utterance.translatedText,
       timestamp: new Date().toLocaleTimeString(),
-      segments: [...utterance.segments]
+      active: false,
+      avatar: utterance.avatar
     };
     
-    // Add or update in our collection
-    addOrUpdateUtterance(finalUtterance);
+    // Update our map of translated utterances
+    updateTranslatedUtterancesMap(speakerId, finalUtterance);
     
     // Log the complete translation
     debugLog(`Finalized speech: "${utterance.translatedText?.substring(0, 40) || 'n/a'}..."`);
+    debugLog(`Finalized speech from ${utterance.speaker}: "${utterance.fullText.substring(0, 40)}..."`);
   }
   
-  // Mark it as inactive
-  utterance.active = false;
+  // Create new utterance ID for next time this speaker talks
+  const newId = Date.now().toString();
   
-  // Clear the active speaker entry
-  delete activeSpeakers[speakerId];
+  // Create a new object for future utterances from this speaker
+  // This allows multiple utterances from the same speaker to be accumulated
+  const speakerInfo = {
+    speaker: utterance.speaker,
+    fullText: "",
+    lastTime: 0,
+    translatedText: "",
+    utteranceId: newId,
+    active: false,
+    avatar: utterance.avatar
+  };
+  
+  // Keep the speaker reference with new ID and empty content
+  activeSpeakers[speakerId] = speakerInfo;
   
   // Clear any related timers
   clearActiveTimerForSpeaker(speakerId, 'finalize');
-  
-  debugLog(`Finalized speech from ${utterance.speaker}: "${utterance.fullText.substring(0, 40)}..."`);
   
   // Update the display
   updateTranslationsDisplay(translatedUtterances, activeSpeakers);
@@ -295,7 +433,7 @@ function clearSubtitleData() {
   
   try {
     // Clear data structures
-    translatedUtterances = [];
+    translatedUtterances = {};
     
     // Finalize any active speakers
     const activeIds = Object.keys(activeSpeakers);
@@ -304,12 +442,18 @@ function clearSubtitleData() {
       delete activeSpeakers[speakerId];
     }
     
+    // Clear translation timers
+    for (const speakerId in translationTimers) {
+      clearTimeout(translationTimers[speakerId]);
+      delete translationTimers[speakerId];
+    }
+    
     // Clear other data structures
     knownSubtitles.clear();
-    allCapturedText = [];
+    lastFullTextBySpeaker = {};
     
     // Update display with empty data
-    updateTranslationsDisplay([], {});
+    updateTranslationsDisplay({}, {});
   } finally {
     // Always reset the clearing flag
     setTimeout(() => {
@@ -328,7 +472,7 @@ function getActiveSpeakers() {
 
 /**
  * Get translated utterances
- * @returns {Array} - Array of translated utterances
+ * @returns {Object} - Map of speaker IDs to their latest utterances
  */
 function getTranslatedUtterances() {
   return translatedUtterances;
