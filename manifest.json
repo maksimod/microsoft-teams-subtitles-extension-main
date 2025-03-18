@@ -13,5 +13,11 @@
       "matches": ["https://teams.microsoft.com/*"],
       "js": ["content.js"]
     }
+  ],
+  "web_accessible_resources": [
+    {
+      "resources": [".env"],
+      "matches": ["https://teams.microsoft.com/*"]
+    }
   ]
 }

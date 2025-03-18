@@ -24,10 +24,83 @@
         padding: 5px;
         margin-bottom: 10px;
       }
+      .toggle-container {
+        display: flex;
+        align-items: center;
+        margin: 15px 0;
+      }
+      .toggle-label {
+        margin-right: 10px;
+      }
+      .toggle-switch {
+        position: relative;
+        display: inline-block;
+        width: 60px;
+        height: 30px;
+      }
+      .toggle-switch input {
+        opacity: 0;
+        width: 0;
+        height: 0;
+      }
+      .toggle-slider {
+        position: absolute;
+        cursor: pointer;
+        top: 0;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        background-color: #ccc;
+        transition: .4s;
+        border-radius: 34px;
+      }
+      .toggle-slider:before {
+        position: absolute;
+        content: "";
+        height: 22px;
+        width: 22px;
+        left: 4px;
+        bottom: 4px;
+        background-color: white;
+        transition: .4s;
+        border-radius: 50%;
+      }
+      input:checked + .toggle-slider {
+        background-color: #2196F3;
+      }
+      input:checked + .toggle-slider:before {
+        transform: translateX(30px);
+      }
+      .status {
+        margin-top: 15px;
+        padding: 8px;
+        border-radius: 4px;
+        text-align: center;
+        font-weight: bold;
+      }
+      .status.active {
+        background-color: #d4edda;
+        color: #155724;
+      }
+      .status.inactive {
+        background-color: #f8d7da;
+        color: #721c24;
+      }
     </style>
   </head>
   <body>
     <h3>Teams Subtitle Translator</h3>
+    
+    <div class="toggle-container">
+      <span class="toggle-label">Translation:</span>
+      <label class="toggle-switch">
+        <input type="checkbox" id="translationToggle">
+        <span class="toggle-slider"></span>
+      </label>
+    </div>
+    
+    <div id="statusMessage" class="status inactive">Translation is OFF</div>
+    
     <label for="inputLang">Input Language:</label>
     <select id="inputLang">
       <option value="auto">Auto Detect</option>
@@ -45,9 +118,8 @@
       <!-- Add more languages as needed -->
     </select>
 
-    <button id="startButton">Start Translation</button>
-    <div id="subtitles">No subtitles detected yet.</div>
-
+    <button id="applyButton">Apply Settings</button>
+    
     <!-- Reference the external JavaScript file -->
     <script src="popup.js"></script>
   </body>
