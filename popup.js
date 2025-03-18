@@ -27,15 +27,6 @@ async function getActiveTab() {
   });
 }
 
-// Function to create overlay in Teams
-function applySettings() {
-  chrome.tabs.query({active: true, currentWindow: true}, function(tabs) {
-    chrome.tabs.sendMessage(tabs[0].id, {
-      action: "forcePopupOverlay"
-    });
-  });
-}
-
 // Function to check the current translation status
 async function checkTranslationStatus() {
   try {
@@ -173,9 +164,7 @@ applyButton.addEventListener("click", () => {
   const settings = savePreferences();
   
   if (translationToggle.checked) {
+    // If translation is active, restart it with new settings
     startTranslation(settings);
   }
-
-  // Принудительно показываем overlay
-  applySettings();
 });
