@@ -1,40 +1,45 @@
 // Subtitle processing module
 import Config from './config.js';
-import { debugLog, getSpeakerId, isContinuationOfSpeech } from './utils.js';
+import { debugLog, getSpeakerId, isContinuationOfSpeech, debounce } from './utils.js';
 import { 
   translateText, 
+  throttledTranslate,
   clearActiveTimerForSpeaker, 
   setActiveTimerForSpeaker 
 } from './translation-service.js';
 import { updateTranslationsDisplay } from './popup-manager.js';
-import { updateDisplay as updateInlineDisplay } from './direct-content-display.js';
 
 // Speech detection variables
-let activeSpeakers = {}; // Map of active speakers and their current utterances
-let knownSubtitles = new Set(); // Set of known subtitle texts to avoid duplicates
-let translatedUtterances = {}; // Map of speaker ID to their latest utterance
+const activeSpeakers = {}; // Map of active speakers and their current utterances
+const knownSubtitles = new Set(); // Set of known subtitle texts to avoid duplicates
+const translatedUtterances = {}; // Map of speaker ID to their latest utterance
 let isClearing = false; // Flag to prevent clearing and adding simultaneously
 let lastProcessedTime = 0; // Track when we last processed subtitles
 
 // Speaker identification cache
-let speakerNameCache = {}; // Cache speaker names by DOM elements
-let lastFullTextBySpeaker = {}; // Track last complete text by speaker to avoid duplicates
+const speakerNameCache = {}; // Cache speaker names by DOM elements
+const lastFullTextBySpeaker = {}; // Track last complete text by speaker to avoid duplicates
 
 // Timers for delaying translations
-let translationTimers = {};
+const translationTimers = {};
 
 // Minimum length for translation
 const MIN_LENGTH_FOR_TRANSLATION = 2;
 
 // Reasonable translation update interval - not too frequent
-const TRANSLATION_UPDATE_INTERVAL = 1000; // 1 second minimum between translation requests
+const TRANSLATION_UPDATE_INTERVAL = 800; // Slightly faster than default 1000ms
 
 /**
  * Reset known subtitles to avoid processing past items
  */
 function resetKnownSubtitles() {
   knownSubtitles.clear();
-  lastFullTextBySpeaker = {}; // Reset last texts as well
+  
+  // Use forEach to clear last texts
+  Object.keys(lastFullTextBySpeaker).forEach(key => {
+    delete lastFullTextBySpeaker[key];
+  });
+  
   debugLog("Known subtitles reset");
 }
 
@@ -47,7 +52,7 @@ function detectSpeaker() {
     let speakerName = "Unknown";
     let speakerAvatar = null;
     
-    // Try multiple selectors to find the speaker
+    // Try multiple selectors to find the speaker with prioritization
     const speakerSelectors = [
       // Primary Teams caption selector
       '[data-tid="closed-caption-activity-name"]',
@@ -56,46 +61,78 @@ function detectSpeaker() {
       // Fallback for other versions
       '[aria-label*="caption"] .caption-speaker',
       '.caption-container .caption-speaker',
+      // Latest Teams version selectors
+      '[data-tid="meetup-captions-container"] [data-tid="caption-speaker"]',
+      '[data-tid="meetup-captions-container"] [class*="speaker"]',
       // Extremely generic fallback - last resort
       '[class*="caption"] [class*="speaker"]'
     ];
     
     // Try each selector
     for (const selector of speakerSelectors) {
-      const speakerElement = document.querySelector(selector);
-      if (speakerElement && speakerElement.innerText.trim()) {
-        speakerName = speakerElement.innerText.trim();
-        break;
+      const speakerElements = document.querySelectorAll(selector);
+      for (const speakerElement of speakerElements) {
+        if (speakerElement && speakerElement.innerText && speakerElement.innerText.trim()) {
+          speakerName = speakerElement.innerText.trim();
+          
+          // If we found a name, check if this element has an associated avatar
+          const nearbyAvatar = speakerElement.closest('[data-tid], [class*="avatar"], [class*="participant"]')?.querySelector('img');
+          if (nearbyAvatar?.src) {
+            speakerAvatar = nearbyAvatar.src;
+          }
+          
+          // Break early if we found a name
+          break;
+        }
       }
+      
+      // Break early if we found a name
+      if (speakerName !== "Unknown") break;
     }
     
-    // Try to find avatar (profile picture)
-    const avatarSelectors = [
-      // Various possible selectors for avatar images
-      '[data-tid="closed-caption-activity-avatar"] img',
-      '.ts-captions-container .ts-captions-avatar img',
-      '[class*="avatar-image"]',
-      '.call-participant-avatar img'
-    ];
-    
-    for (const selector of avatarSelectors) {
-      const avatarElement = document.querySelector(selector);
-      if (avatarElement && avatarElement.src) {
-        speakerAvatar = avatarElement.src;
-        break;
+    // Only search for avatar if we still don't have one
+    if (!speakerAvatar) {
+      // Try to find avatar (profile picture)
+      const avatarSelectors = [
+        // Various possible selectors for avatar images
+        '[data-tid="closed-caption-activity-avatar"] img',
+        '.ts-captions-container .ts-captions-avatar img',
+        '[class*="avatar-image"]',
+        '.call-participant-avatar img',
+        '[data-tid*="avatar"] img',
+        '[class*="participant"] [class*="avatar"] img'
+      ];
+      
+      for (const selector of avatarSelectors) {
+        const avatarElements = document.querySelectorAll(selector);
+        for (const avatarElement of avatarElements) {
+          if (avatarElement && avatarElement.src) {
+            speakerAvatar = avatarElement.src;
+            break;
+          }
+        }
+        if (speakerAvatar) break;
       }
     }
     
     // If we still don't have a speaker name, try looking at data attributes
     if (speakerName === "Unknown") {
-      const possibleElements = document.querySelectorAll('[aria-label*="is speaking"], [data-tid*="participant"]');
+      const possibleElements = document.querySelectorAll('[aria-label*="is speaking"], [data-tid*="participant"], [class*="participant"]');
+      
       for (const el of possibleElements) {
+        // Check aria-label like "John Doe is speaking"
         const ariaLabel = el.getAttribute('aria-label');
         if (ariaLabel && ariaLabel.includes('speaking')) {
-          // Extract name from aria-label like "John Doe is speaking"
           const match = ariaLabel.match(/(.*?)\s+is speaking/i);
           if (match && match[1]) {
             speakerName = match[1].trim();
+            
+            // If we found a name, check for an avatar
+            const avatarImg = el.querySelector('img');
+            if (avatarImg?.src) {
+              speakerAvatar = avatarImg.src;
+            }
+            
             break;
           }
         }
@@ -106,6 +143,13 @@ function detectSpeaker() {
           // The element itself might have the name or a child element might
           if (el.innerText && el.innerText.trim()) {
             speakerName = el.innerText.trim();
+            
+            // Check for avatar
+            const avatarImg = el.querySelector('img');
+            if (avatarImg?.src) {
+              speakerAvatar = avatarImg.src;
+            }
+            
             break;
           }
           
@@ -113,6 +157,13 @@ function detectSpeaker() {
           const nameEl = el.querySelector('[data-tid*="name"], [class*="name"]');
           if (nameEl && nameEl.innerText.trim()) {
             speakerName = nameEl.innerText.trim();
+            
+            // Check for avatar
+            const avatarImg = el.querySelector('img') || nameEl.closest('[data-tid], [class*="participant"]')?.querySelector('img');
+            if (avatarImg?.src) {
+              speakerAvatar = avatarImg.src;
+            }
+            
             break;
           }
         }
@@ -125,11 +176,13 @@ function detectSpeaker() {
       .replace(/\(presenter\)/i, '')
       .replace(/\(attendee\)/i, '')
       .replace(/\(guest\)/i, '')
+      .replace(/\(you\)/i, '')
       .trim();
     
     return { name: speakerName, avatar: speakerAvatar };
   } catch (error) {
     console.error("Error detecting speaker:", error);
+    debugLog(`Speaker detection error: ${error.message}`);
     return { name: "Unknown", avatar: null };
   }
 }
@@ -148,7 +201,7 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
   
   // Rate limit processing to avoid performance issues
   const now = Date.now();
-  if (now - lastProcessedTime < Config.DEBOUNCE_DELAY / 2) { // Half the default debounce delay for more frequent processing
+  if (now - lastProcessedTime < Config.DEBOUNCE_DELAY / 2) {
     return;
   }
   lastProcessedTime = now;
@@ -158,6 +211,7 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
     'span[dir="auto"][data-tid="closed-caption-text"]',
     '.ts-captions-container .ts-captions-text',
     '.caption-text',
+    '[data-tid="meetup-captions-container"] [data-tid="caption-text"]',
     '[class*="caption"] [class*="text"]'
   ];
   
@@ -165,7 +219,7 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
   for (const selector of subtitleSelectors) {
     const elements = document.querySelectorAll(selector);
     if (elements.length > 0) {
-      subtitleContainers = elements;
+      subtitleContainers = Array.from(elements);
       break;
     }
   }
@@ -211,7 +265,7 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
         continue;
       }
       
-      debugLog(`Detected subtitle from ${speakerName}: "${text}"`);
+      debugLog(`Detected subtitle from ${speakerName}: "${text.substring(0, 40)}${text.length > 40 ? '...' : ''}"`);
       
       // Check if this is a continued speech or a new one
       if (activeSpeakers[speakerId]) {
@@ -233,7 +287,6 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
           // If content changed, force UI update to show "Translating..." initially
           if (hasContentChanged) {
             updateTranslationsDisplay(translatedUtterances, activeSpeakers);
-            updateInlineDisplay(translatedUtterances, activeSpeakers);
           }
         }
         
@@ -271,7 +324,6 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
         
         // Immediately update display to show "Translating..." for this new speaker
         updateTranslationsDisplay(translatedUtterances, activeSpeakers);
-        updateInlineDisplay(translatedUtterances, activeSpeakers);
       }
     }
     
@@ -291,7 +343,6 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
 function forceDisplayUpdate() {
   // Update both display types
   updateTranslationsDisplay(translatedUtterances, activeSpeakers);
-  updateInlineDisplay(translatedUtterances, activeSpeakers);
 }
 
 // Expose for use by translation service
@@ -324,7 +375,22 @@ function scheduleTranslation(speakerId, inputLang, outputLang) {
     0 : TRANSLATION_UPDATE_INTERVAL;
   
   translationTimers[speakerId] = setTimeout(() => {
-    translateAndUpdateUtterance(speakerId, inputLang, outputLang);
+    if (activeSpeakers[speakerId]?.fullText.length > 20) {
+      // Use throttled translate for longer text to improve performance
+      throttledTranslate(speakerId, activeSpeakers[speakerId].fullText, inputLang, outputLang)
+        .then((result) => {
+          if (result && activeSpeakers[speakerId]) {
+            activeSpeakers[speakerId].translatedText = result;
+            forceDisplayUpdate();
+          }
+        })
+        .catch((error) => {
+          console.error("Translation error:", error);
+        });
+    } else {
+      // Use standard translate for short text
+      translateAndUpdateUtterance(speakerId, inputLang, outputLang);
+    }
     delete translationTimers[speakerId];
   }, initialDelay);
 }
@@ -429,10 +495,15 @@ async function finalizeSpeech(speakerId, inputLang, outputLang) {
   
   // If we haven't translated it yet, try once more
   if (!utterance.translatedText || utterance.translatedText === "..." || utterance.translatedText === "Translating...") {
-    const translatedText = await translateText(speakerId, utterance.fullText, inputLang, outputLang);
-    if (translatedText) {
-      utterance.translatedText = translatedText;
-    } else {
+    try {
+      const translatedText = await translateText(speakerId, utterance.fullText, inputLang, outputLang);
+      if (translatedText) {
+        utterance.translatedText = translatedText;
+      } else {
+        utterance.translatedText = "[Translation unavailable]";
+      }
+    } catch (error) {
+      console.error("Finalization translation error:", error);
       utterance.translatedText = "[Translation unavailable]";
     }
   }
@@ -455,8 +526,7 @@ async function finalizeSpeech(speakerId, inputLang, outputLang) {
     updateTranslatedUtterancesMap(speakerId, finalUtterance);
     
     // Log the complete translation
-    debugLog(`Finalized speech: "${utterance.translatedText?.substring(0, 40) || 'n/a'}..."`);
-    debugLog(`Finalized speech from ${utterance.speaker}: "${utterance.fullText.substring(0, 40)}..."`);
+    debugLog(`Finalized speech from ${utterance.speaker}: "${utterance.translatedText?.substring(0, 40) || 'n/a'}..."`);
   }
   
   // Create new utterance ID for next time this speaker talks
@@ -491,8 +561,10 @@ function clearSubtitleData() {
   isClearing = true; // Set clearing flag
   
   try {
-    // Clear data structures
-    translatedUtterances = {};
+    // Clear translated utterances map
+    Object.keys(translatedUtterances).forEach(key => {
+      delete translatedUtterances[key];
+    });
     
     // Finalize any active speakers
     const activeIds = Object.keys(activeSpeakers);
@@ -509,7 +581,11 @@ function clearSubtitleData() {
     
     // Clear other data structures
     knownSubtitles.clear();
-    lastFullTextBySpeaker = {};
+    
+    // Clean up lastFullTextBySpeaker 
+    Object.keys(lastFullTextBySpeaker).forEach(key => {
+      delete lastFullTextBySpeaker[key];
+    });
     
     // Update display with empty data
     forceDisplayUpdate();
@@ -538,13 +614,9 @@ function getTranslatedUtterances() {
 }
 
 // Create a debounced version of processSubtitles
-let debounceTimer;
-function debounceProcessSubtitles(isTranslationActive, inputLang, outputLang) {
-  clearTimeout(debounceTimer);
-  debounceTimer = setTimeout(() => {
-    processSubtitles(isTranslationActive, inputLang, outputLang);
-  }, Config.DEBOUNCE_DELAY);
-}
+const debounceProcessSubtitles = debounce((isTranslationActive, inputLang, outputLang) => {
+  processSubtitles(isTranslationActive, inputLang, outputLang);
+}, Config.DEBOUNCE_DELAY);
 
 // Expose getActiveSpeakers globally so it can be used by translation service
 window.getActiveSpeakers = getActiveSpeakers;
