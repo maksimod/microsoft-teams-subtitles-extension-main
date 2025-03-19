@@ -1,6 +1,8 @@
 .env
-/dist/
-dist/
+
+dist/popup.html
+
+
 /node_modules/
 node_modules/
 
