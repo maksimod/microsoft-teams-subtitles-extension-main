@@ -1,5 +1,6 @@
 .env
-/dist/
-dist/
+
+dist/content.js*
+
 /node_modules/
 node_modules/
