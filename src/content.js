@@ -20,6 +20,8 @@ import {
   resetKnownSubtitles
 } from './subtitle-processor.js';
 
+console.log("Teams Subtitle Translator: Content script initializing...");
+
 // Wrap the entire script in a self-executing function to avoid global scope pollution
 (async function () {
   // Check if the script has already run
@@ -121,19 +123,24 @@ import {
     
     debugLog(`Starting translation with input: ${inputLang}, output: ${outputLang}, display: ${displayMode}`);
     
-    // Initialize popup display - ВАЖНО: открывает перемещаемое окно перевода
+    // Initialize popup display
     openTranslationsWindow(updateTranslationsDisplay);
     setTranslationStatus(true);
     
-    // Only observe the caption container instead of the entire body
+    // Enhanced caption container detection
     const findCaptionContainer = () => {
-      // Try to find the caption container element
+      // Try to find the caption container element with more comprehensive selectors
       const possibleContainers = [
         document.querySelector('[role="dialog"][aria-label*="caption"], [data-tid="meetup-captions-container"]'),
         document.querySelector('[data-tid="closed-caption-container"]'),
         document.querySelector('.cc-container'),
         document.querySelector('.ts-captions-container'),
-        document.querySelector('[class*="caption-container"]')
+        document.querySelector('[class*="caption-container"]'),
+        document.querySelector('[data-tid*="caption"]'),
+        document.querySelector('[class*="captions"]'),
+        // Add more Teams version-specific selectors
+        document.querySelector('[data-tid="caption-container-root"]'),
+        document.querySelector('[class*="captionContainer"]')
       ];
       
       return possibleContainers.find(el => el);
@@ -198,7 +205,7 @@ import {
             debounceProcessSubtitles(isTranslationActive, inputLang, outputLang);
           });
           
-          // Find caption container again using the improved selector list
+          // Find caption container again
           const captionContainer = findCaptionContainer();
           
           // Reattach it
@@ -231,7 +238,7 @@ import {
           getActiveSpeakers()
         );
       }
-    }, Config.OBSERVER_UPDATE_INTERVAL); // Check every 30 seconds
+    }, Config.OBSERVER_UPDATE_INTERVAL);
   }
   
   // Function to stop translation
@@ -244,6 +251,7 @@ import {
       // Disconnect the observer
       if (observer) {
         observer.disconnect();
+        observer = null;
       }
       
       // Clear all translation timers
@@ -265,15 +273,24 @@ import {
     return { status: "error", message: "Translation not active" };
   }
   
-  // Helper function to find caption container
+  // Enhanced caption container detection
   function findCaptionContainer() {
-    // Try to find the caption container element
+    // Try to find the caption container element with more comprehensive selectors
     const possibleContainers = [
       document.querySelector('[role="dialog"][aria-label*="caption"], [data-tid="meetup-captions-container"]'),
       document.querySelector('[data-tid="closed-caption-container"]'),
       document.querySelector('.cc-container'),
       document.querySelector('.ts-captions-container'),
-      document.querySelector('[class*="caption-container"]')
+      document.querySelector('[class*="caption-container"]'),
+      document.querySelector('[data-tid*="caption"]'),
+      document.querySelector('[class*="captions"]'),
+      // Add more Teams version-specific selectors
+      document.querySelector('[data-tid="caption-container-root"]'),
+      document.querySelector('[class*="captionContainer"]'),
+      document.querySelector('[data-tid*="caption"]'),
+      document.querySelector('[aria-label*="caption"]'),
+      document.querySelector('[class*="captions"]'),
+      document.querySelector('[role="dialog"][aria-label*="captions"]')
     ];
     
     return possibleContainers.find(el => el);

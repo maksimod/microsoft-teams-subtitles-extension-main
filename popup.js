@@ -29,16 +29,20 @@ async function getActiveTab() {
 
 // Function to focus the Teams tab and bring the popup on top
 async function focusTeamsTab() {
-  const tab = await getActiveTab();
-  if (tab) {
-    // Focus the tab first
-    chrome.tabs.update(tab.id, { active: true });
-    
-    // Then force the popup window to appear on top
-    const popupWindow = chrome.extension.getViews({ type: "popup" })[0];
-    if (popupWindow) {
-      popupWindow.focus();
+  try {
+    const tab = await getActiveTab();
+    if (tab) {
+      // Focus the tab first
+      chrome.tabs.update(tab.id, { active: true });
+      
+      // Force the popup window to appear on top if possible
+      const views = chrome.extension.getViews({ type: "popup" });
+      if (views && views.length > 0) {
+        views[0].focus();
+      }
     }
+  } catch (error) {
+    console.error("Error focusing tab:", error);
   }
 }
 
@@ -46,12 +50,25 @@ async function focusTeamsTab() {
 async function checkTranslationStatus() {
   try {
     const tab = await getActiveTab();
+    if (!tab) return;
+    
+    // Make sure we're on a Teams page
+    if (!tab.url || !tab.url.includes("teams.microsoft.com")) {
+      updateStatusUI(false);
+      statusMessage.textContent = "Please open Microsoft Teams";
+      return;
+    }
     
     // Inject content script if not already injected
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["content.js"],
-    });
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"],
+      });
+    } catch (error) {
+      console.error("Error injecting content script:", error);
+      // Continue anyway as the script might already be injected
+    }
     
     // Ask content.js for current status
     chrome.tabs.sendMessage(
@@ -86,6 +103,17 @@ document.addEventListener("DOMContentLoaded", () => {
     // Check current translation status
     checkTranslationStatus();
   });
+  
+  // Add version info
+  const manifestData = chrome.runtime.getManifest();
+  const versionInfo = document.createElement('div');
+  versionInfo.textContent = `v${manifestData.version}`;
+  versionInfo.style.position = 'absolute';
+  versionInfo.style.bottom = '5px';
+  versionInfo.style.right = '5px';
+  versionInfo.style.fontSize = '10px';
+  versionInfo.style.color = '#888';
+  document.body.appendChild(versionInfo);
 });
 
 // Function to save preferences
@@ -100,36 +128,7 @@ function savePreferences() {
     },
     () => {
       console.log("Preferences saved.");
-      
-      // Provide visual feedback that settings were saved
-      const savedFeedback = document.createElement('div');
-      savedFeedback.textContent = "Settings saved!";
-      savedFeedback.style.position = "absolute";
-      savedFeedback.style.bottom = "40px";
-      savedFeedback.style.left = "50%";
-      savedFeedback.style.transform = "translateX(-50%)";
-      savedFeedback.style.backgroundColor = "#4CAF50";
-      savedFeedback.style.color = "white";
-      savedFeedback.style.padding = "5px 10px";
-      savedFeedback.style.borderRadius = "4px";
-      savedFeedback.style.zIndex = "1000";
-      savedFeedback.style.opacity = "0";
-      savedFeedback.style.transition = "opacity 0.3s ease";
-      
-      document.body.appendChild(savedFeedback);
-      
-      // Fade in
-      setTimeout(() => {
-        savedFeedback.style.opacity = "1";
-      }, 10);
-      
-      // Fade out and remove
-      setTimeout(() => {
-        savedFeedback.style.opacity = "0";
-        setTimeout(() => {
-          document.body.removeChild(savedFeedback);
-        }, 300);
-      }, 2000);
+      showFeedback("Settings saved!");
     }
   );
   
@@ -140,16 +139,61 @@ function savePreferences() {
   };
 }
 
+// Function to show feedback message
+function showFeedback(message) {
+  const savedFeedback = document.createElement('div');
+  savedFeedback.textContent = message;
+  savedFeedback.style.position = "absolute";
+  savedFeedback.style.bottom = "40px";
+  savedFeedback.style.left = "50%";
+  savedFeedback.style.transform = "translateX(-50%)";
+  savedFeedback.style.backgroundColor = "#4CAF50";
+  savedFeedback.style.color = "white";
+  savedFeedback.style.padding = "5px 10px";
+  savedFeedback.style.borderRadius = "4px";
+  savedFeedback.style.zIndex = "1000";
+  savedFeedback.style.opacity = "0";
+  savedFeedback.style.transition = "opacity 0.3s ease";
+  
+  document.body.appendChild(savedFeedback);
+  
+  // Fade in
+  setTimeout(() => {
+    savedFeedback.style.opacity = "1";
+  }, 10);
+  
+  // Fade out and remove
+  setTimeout(() => {
+    savedFeedback.style.opacity = "0";
+    setTimeout(() => {
+      document.body.removeChild(savedFeedback);
+    }, 300);
+  }, 2000);
+}
+
 // Function to start translation
 async function startTranslation(settings) {
   try {
     const tab = await getActiveTab();
+    if (!tab) return;
+    
+    // Make sure we're on a Teams page
+    if (!tab.url || !tab.url.includes("teams.microsoft.com")) {
+      showFeedback("Please open Microsoft Teams");
+      updateStatusUI(false);
+      return;
+    }
     
     // Inject content script if not already injected
-    await chrome.scripting.executeScript({
-      target: { tabId: tab.id },
-      files: ["content.js"],
-    });
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        files: ["content.js"],
+      });
+    } catch (error) {
+      console.error("Error injecting content script:", error);
+      // Continue anyway as the script might already be injected
+    }
     
     // Send message to content.js to start translation
     chrome.tabs.sendMessage(
@@ -170,7 +214,7 @@ async function startTranslation(settings) {
           
           // Show error message
           if (response && response.message) {
-            alert(`Error: ${response.message}`);
+            showFeedback(`Error: ${response.message}`);
           }
         }
       }
@@ -178,6 +222,7 @@ async function startTranslation(settings) {
   } catch (error) {
     console.error("Error starting translation:", error);
     updateStatusUI(false);
+    showFeedback("Error starting translation");
   }
 }
 
@@ -185,6 +230,7 @@ async function startTranslation(settings) {
 async function stopTranslation() {
   try {
     const tab = await getActiveTab();
+    if (!tab) return;
     
     // Send message to content.js to stop translation
     chrome.tabs.sendMessage(

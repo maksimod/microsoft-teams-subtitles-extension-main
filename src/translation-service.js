@@ -1,18 +1,72 @@
 // Translation service
 import Config from './config.js';
-import { debugLog } from './utils.js';
+import { debugLog, throttle } from './utils.js';
+
+// Enhanced caching using LRU mechanism
+class LRUCache {
+  constructor(maxSize = 500) {
+    this.maxSize = maxSize;
+    this.cache = new Map();
+    this.order = [];
+  }
+  
+  has(key) {
+    return this.cache.has(key);
+  }
+  
+  get(key) {
+    if (!this.cache.has(key)) return null;
+    
+    // Move to the end of the order for LRU
+    const index = this.order.indexOf(key);
+    if (index > -1) this.order.splice(index, 1);
+    this.order.push(key);
+    
+    return this.cache.get(key);
+  }
+  
+  set(key, value) {
+    // If key exists, update value and move to end
+    if (this.cache.has(key)) {
+      this.cache.set(key, value);
+      const index = this.order.indexOf(key);
+      if (index > -1) this.order.splice(index, 1);
+      this.order.push(key);
+      return;
+    }
+    
+    // Check if we need to remove oldest item
+    if (this.order.length >= this.maxSize) {
+      const oldestKey = this.order.shift();
+      this.cache.delete(oldestKey);
+    }
+    
+    // Add new item
+    this.cache.set(key, value);
+    this.order.push(key);
+  }
+  
+  clear() {
+    this.cache.clear();
+    this.order = [];
+  }
+  
+  get size() {
+    return this.cache.size;
+  }
+}
 
 // Keep track of translation requests and throttling
-let lastTranslationRequestTime = {};
-let pendingTranslations = {};
-let activeTimers = {};
-let translationRetryCount = {}; // Retry counter
-let translationCache = new Map(); // Cache for translations to avoid duplicate requests
-let partialTranslations = {}; // For storing partial translations to be shown in the UI
-let translationInProgress = {}; // Track if translation is currently in progress
+const lastTranslationRequestTime = {};
+const pendingTranslations = {};
+const activeTimers = {};
+const translationRetryCount = {}; // Retry counter
+const translationCache = new LRUCache(500); // Enhanced cache for translations
+const partialTranslations = {}; // For storing partial translations to be shown in the UI
+const translationInProgress = {}; // Track if translation is currently in progress
 
 // Use a reasonable throttling time to avoid API rate limits
-const REDUCED_THROTTLE_TIME = 1000; // 1 second instead of default 1500ms
+const REDUCED_THROTTLE_TIME = 800; // Slightly less than the default 1000ms
 
 /**
  * Translate text using OpenAI API
@@ -24,7 +78,7 @@ const REDUCED_THROTTLE_TIME = 1000; // 1 second instead of default 1500ms
  */
 async function translateText(speakerId, text, inputLang, outputLang) {
   // Don't translate if the text is too short
-  if (text.length < 2) return text;
+  if (!text || text.length < 2) return text;
   
   // Create cache key
   const cacheKey = `${inputLang}:${outputLang}:${text}`;
@@ -46,13 +100,10 @@ async function translateText(speakerId, text, inputLang, outputLang) {
     return partialTranslations[speakerId] || "Translating...";
   }
   
-  // Use a more aggressive throttling for frequent updates
-  const throttleTime = REDUCED_THROTTLE_TIME;
-  
   // Check if we need to throttle this translation request
   const now = Date.now();
   if (lastTranslationRequestTime[speakerId] && 
-      now - lastTranslationRequestTime[speakerId] < throttleTime) {
+      now - lastTranslationRequestTime[speakerId] < REDUCED_THROTTLE_TIME) {
     // If there's already a pending translation for this speaker, replace it
     if (pendingTranslations[speakerId]) {
       pendingTranslations[speakerId].text = text;
@@ -66,7 +117,7 @@ async function translateText(speakerId, text, inputLang, outputLang) {
     }
     
     // Schedule a translation for later
-    const timeToWait = throttleTime - (now - lastTranslationRequestTime[speakerId]);
+    const timeToWait = REDUCED_THROTTLE_TIME - (now - lastTranslationRequestTime[speakerId]);
     
     pendingTranslations[speakerId] = { 
       text,
@@ -132,7 +183,7 @@ async function translateText(speakerId, text, inputLang, outputLang) {
         
         // Add timeout using AbortController
         const controller = new AbortController();
-        const timeoutId = setTimeout(() => controller.abort(), 8000); // 8 second timeout
+        const timeoutId = setTimeout(() => controller.abort(), 6000); // 6 second timeout (reduced from 8s)
         
         try {
           response = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -172,7 +223,7 @@ async function translateText(speakerId, text, inputLang, outputLang) {
     const data = await response.json();
     
     // Verify that the response has the expected structure
-    if (!data || !data.choices || !data.choices[0] || !data.choices[0].message || !data.choices[0].message.content) {
+    if (!data?.choices?.[0]?.message?.content) {
       throw new Error("Invalid response structure from API");
     }
     
@@ -190,18 +241,10 @@ async function translateText(speakerId, text, inputLang, outputLang) {
     // Clear in-progress flag
     delete translationInProgress[speakerId];
     
-    // Limit cache size to avoid memory leaks
-    if (translationCache.size > 500) {
-      // Delete oldest entries (first 100)
-      const keysToDelete = Array.from(translationCache.keys()).slice(0, 100);
-      keysToDelete.forEach(key => translationCache.delete(key));
-    }
-    
     // Reset retry count on successful translation
     translationRetryCount[speakerId] = 0;
     
     debugLog(`Translation complete: ${translatedText.substring(0, 40)}...`);
-    debugLog(`Translation update: ${translatedText.substring(0, 40)}...`);
     
     return translatedText;
   } catch (error) {
@@ -235,6 +278,9 @@ async function translateText(speakerId, text, inputLang, outputLang) {
   }
 }
 
+// Create a throttled version for better performance
+const throttledTranslate = throttle(translateText, REDUCED_THROTTLE_TIME);
+
 /**
  * Update the active speaker's translation in real-time
  * @param {string} speakerId - The speaker ID
@@ -267,7 +313,7 @@ async function checkApiConnection() {
   try {
     // Add timeout using AbortController
     const controller = new AbortController();
-    const timeoutId = setTimeout(() => controller.abort(), 5000); // 5 second timeout
+    const timeoutId = setTimeout(() => controller.abort(), 4000); // 4 second timeout (reduced from 5s)
     
     try {
       // Make a simpler request to verify API access
@@ -309,11 +355,11 @@ function clearTranslationTimers() {
   }
   
   // Reset translation states
-  lastTranslationRequestTime = {};
-  pendingTranslations = {};
-  partialTranslations = {}; // Also clear partial translations
-  translationInProgress = {}; // Clear in-progress flags
-  translationRetryCount = {}; // Reset retry counts too
+  Object.keys(lastTranslationRequestTime).forEach(key => delete lastTranslationRequestTime[key]);
+  Object.keys(pendingTranslations).forEach(key => delete pendingTranslations[key]);
+  Object.keys(partialTranslations).forEach(key => delete partialTranslations[key]);
+  Object.keys(translationInProgress).forEach(key => delete translationInProgress[key]);
+  Object.keys(translationRetryCount).forEach(key => delete translationRetryCount[key]);
   
   // No need to clear translation cache - it can be reused
 }
@@ -349,6 +395,7 @@ function clearActiveTimerForSpeaker(speakerId, type) {
 
 export {
   translateText,
+  throttledTranslate,
   checkApiConnection,
   clearTranslationTimers,
   getActiveTimerForSpeaker,
