@@ -4,6 +4,7 @@ const outputLang = document.getElementById("outputLang");
 const applyButton = document.getElementById("applyButton");
 const translationToggle = document.getElementById("translationToggle");
 const statusMessage = document.getElementById("statusMessage");
+const displayModeRadios = document.querySelectorAll('input[name="displayMode"]');
 
 // Function to update the UI based on the translation status
 function updateStatusUI(isActive) {
@@ -46,6 +47,26 @@ async function focusTeamsTab() {
   }
 }
 
+// Function to get the selected display mode
+function getSelectedDisplayMode() {
+  for (const radio of displayModeRadios) {
+    if (radio.checked) {
+      return radio.value;
+    }
+  }
+  return 'popup'; // Default to popup if somehow nothing is selected
+}
+
+// Function to set the display mode in the UI
+function setDisplayMode(mode) {
+  for (const radio of displayModeRadios) {
+    if (radio.value === mode) {
+      radio.checked = true;
+      break;
+    }
+  }
+}
+
 // Function to check the current translation status
 async function checkTranslationStatus() {
   try {
@@ -82,6 +103,9 @@ async function checkTranslationStatus() {
           // Update language selections if available
           if (response.inputLang) inputLang.value = response.inputLang;
           if (response.outputLang) outputLang.value = response.outputLang;
+          
+          // Update display mode if available
+          if (response.displayMode) setDisplayMode(response.displayMode);
         } else {
           // No response, assume not active
           updateStatusUI(false);
@@ -96,9 +120,10 @@ async function checkTranslationStatus() {
 
 // Load saved preferences and check current status when popup opens
 document.addEventListener("DOMContentLoaded", () => {
-  chrome.storage.sync.get(["inputLang", "outputLang"], (data) => {
+  chrome.storage.sync.get(["inputLang", "outputLang", "displayMode"], (data) => {
     if (data.inputLang) inputLang.value = data.inputLang;
     if (data.outputLang) outputLang.value = data.outputLang;
+    if (data.displayMode) setDisplayMode(data.displayMode);
     
     // Check current translation status
     checkTranslationStatus();
@@ -120,11 +145,13 @@ document.addEventListener("DOMContentLoaded", () => {
 function savePreferences() {
   const selectedInputLang = inputLang.value;
   const selectedOutputLang = outputLang.value;
+  const selectedDisplayMode = getSelectedDisplayMode();
   
   chrome.storage.sync.set(
     {
       inputLang: selectedInputLang,
       outputLang: selectedOutputLang,
+      displayMode: selectedDisplayMode
     },
     () => {
       console.log("Preferences saved.");
@@ -135,7 +162,7 @@ function savePreferences() {
   return { 
     inputLang: selectedInputLang, 
     outputLang: selectedOutputLang,
-    displayMode: "popup" // Always use popup mode
+    displayMode: selectedDisplayMode
   };
 }
 
@@ -202,7 +229,7 @@ async function startTranslation(settings) {
         action: "startTranslation",
         inputLang: settings.inputLang,
         outputLang: settings.outputLang,
-        displayMode: "popup" // Always use popup mode
+        displayMode: settings.displayMode
       },
       (response) => {
         if (response && response.status === "success") {
@@ -223,6 +250,29 @@ async function startTranslation(settings) {
     console.error("Error starting translation:", error);
     updateStatusUI(false);
     showFeedback("Error starting translation");
+  }
+}
+
+// Function to update display mode without restarting translation
+async function updateDisplayMode(displayMode) {
+  try {
+    const tab = await getActiveTab();
+    
+    // Send message to content.js to update display mode
+    chrome.tabs.sendMessage(
+      tab.id,
+      {
+        action: "setDisplayMode",
+        displayMode: displayMode
+      },
+      (response) => {
+        if (!response || response.status !== "success") {
+          console.error("Failed to update display mode.");
+        }
+      }
+    );
+  } catch (error) {
+    console.error("Error updating display mode:", error);
   }
 }
 
@@ -259,6 +309,16 @@ translationToggle.addEventListener("change", () => {
     stopTranslation();
   }
 });
+
+// Handle display mode changes
+for (const radio of displayModeRadios) {
+  radio.addEventListener("change", () => {
+    if (translationToggle.checked) {
+      // If translation is already active, update the display mode without restarting
+      updateDisplayMode(getSelectedDisplayMode());
+    }
+  });
+}
 
 // Handle apply button clicks
 applyButton.addEventListener("click", () => {
