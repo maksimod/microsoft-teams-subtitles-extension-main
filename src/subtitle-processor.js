@@ -8,7 +8,6 @@ import {
   setActiveTimerForSpeaker 
 } from './translation-service.js';
 import { updateTranslationsDisplay } from './popup-manager.js';
-import { updateDisplay as updateInlineDisplay } from './direct-content-display.js';
 
 // Speech detection variables
 const activeSpeakers = {}; // Map of active speakers and their current utterances
@@ -288,7 +287,6 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
           // If content changed, force UI update to show "Translating..." initially
           if (hasContentChanged) {
             updateTranslationsDisplay(translatedUtterances, activeSpeakers);
-            updateInlineDisplay(translatedUtterances, activeSpeakers);
           }
         }
         
@@ -326,7 +324,6 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
         
         // Immediately update display to show "Translating..." for this new speaker
         updateTranslationsDisplay(translatedUtterances, activeSpeakers);
-        updateInlineDisplay(translatedUtterances, activeSpeakers);
       }
     }
     
@@ -346,7 +343,6 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
 function forceDisplayUpdate() {
   // Update both display types
   updateTranslationsDisplay(translatedUtterances, activeSpeakers);
-  updateInlineDisplay(translatedUtterances, activeSpeakers);
 }
 
 // Expose for use by translation service
