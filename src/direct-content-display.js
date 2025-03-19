@@ -392,7 +392,7 @@ function updateDisplay(translatedUtterances, activeSpeakers) {
     // Compare with last state
     if (JSON.stringify(currentTranslationsState) !== JSON.stringify(lastTranslations)) {
       hasChanges = true;
-      lastTranslations = currentTranslationsState;
+      lastTranslations = JSON.parse(JSON.stringify(currentTranslationsState)); // Deep clone
     }
     
     // If no changes, don't update the DOM
@@ -422,6 +422,7 @@ function updateDisplay(translatedUtterances, activeSpeakers) {
       // Create speaker block
       const speakerBlock = document.createElement('div');
       speakerBlock.className = 'translator-speaker-block';
+      speakerBlock.dataset.speakerId = speakerId;
       
       Object.assign(speakerBlock.style, {
         marginBottom: '15px',
@@ -455,6 +456,7 @@ function updateDisplay(translatedUtterances, activeSpeakers) {
         // Utterance container
         const utteranceDiv = document.createElement('div');
         utteranceDiv.className = `translator-utterance ${utterance.active ? 'active' : ''}`;
+        utteranceDiv.dataset.utteranceId = utterance.id;
         
         Object.assign(utteranceDiv.style, {
           marginBottom: '8px',
@@ -486,6 +488,7 @@ function updateDisplay(translatedUtterances, activeSpeakers) {
         
         // Text
         const textDiv = document.createElement('div');
+        textDiv.className = 'translator-text';
         textDiv.textContent = utterance.translated || "...";
         
         Object.assign(textDiv.style, {

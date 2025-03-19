@@ -8,6 +8,11 @@ let pendingTranslations = {};
 let activeTimers = {};
 let translationRetryCount = {}; // Retry counter
 let translationCache = new Map(); // Cache for translations to avoid duplicate requests
+let partialTranslations = {}; // For storing partial translations to be shown in the UI
+let translationInProgress = {}; // Track if translation is currently in progress
+
+// Use a reasonable throttling time to avoid API rate limits
+const REDUCED_THROTTLE_TIME = 1000; // 1 second instead of default 1500ms
 
 /**
  * Translate text using OpenAI API
@@ -26,22 +31,42 @@ async function translateText(speakerId, text, inputLang, outputLang) {
   
   // Check cache first
   if (translationCache.has(cacheKey)) {
-    return translationCache.get(cacheKey);
+    const cachedTranslation = translationCache.get(cacheKey);
+    debugLog(`Using cached translation for: ${text.substring(0, 30)}...`);
+    
+    // Update active speakers immediately with the cached translation
+    updateActiveSpeakerTranslation(speakerId, cachedTranslation);
+    
+    return cachedTranslation;
   }
+
+  // If there's already a translation in progress for this speaker with the same text,
+  // return the current partial translation or "Translating..."
+  if (translationInProgress[speakerId] && translationInProgress[speakerId].text === text) {
+    return partialTranslations[speakerId] || "Translating...";
+  }
+  
+  // Use a more aggressive throttling for frequent updates
+  const throttleTime = REDUCED_THROTTLE_TIME;
   
   // Check if we need to throttle this translation request
   const now = Date.now();
   if (lastTranslationRequestTime[speakerId] && 
-      now - lastTranslationRequestTime[speakerId] < Config.TRANSLATION_THROTTLE) {
+      now - lastTranslationRequestTime[speakerId] < throttleTime) {
     // If there's already a pending translation for this speaker, replace it
     if (pendingTranslations[speakerId]) {
       pendingTranslations[speakerId].text = text;
       debugLog(`Throttled translation request for ${speakerId}, queued for later`);
-      return null; // Translation will happen later
+      
+      // Always update UI with "Translating..." or the last partial translation
+      const currentPartial = partialTranslations[speakerId] || "Translating...";
+      updateActiveSpeakerTranslation(speakerId, currentPartial);
+      
+      return currentPartial;
     }
     
     // Schedule a translation for later
-    const timeToWait = Config.TRANSLATION_THROTTLE - (now - lastTranslationRequestTime[speakerId]);
+    const timeToWait = throttleTime - (now - lastTranslationRequestTime[speakerId]);
     
     pendingTranslations[speakerId] = { 
       text,
@@ -58,7 +83,11 @@ async function translateText(speakerId, text, inputLang, outputLang) {
     }, timeToWait);
     
     debugLog(`Queued translation for ${speakerId} in ${timeToWait}ms`);
-    return null;
+    
+    // Return the last partial translation if we have one, or "Translating..."
+    const partialText = partialTranslations[speakerId] || "Translating...";
+    updateActiveSpeakerTranslation(speakerId, partialText);
+    return partialText;
   }
   
   // Update the last translation request time
@@ -69,8 +98,14 @@ async function translateText(speakerId, text, inputLang, outputLang) {
     translationRetryCount[speakerId] = 0;
   }
   
+  // Mark this translation as in progress
+  translationInProgress[speakerId] = { text };
+  
   try {
     debugLog(`Translating for ${speakerId}: ${text.substring(0, 40)}...`);
+    
+    // Always update UI with "Translating..." as a feedback to the user
+    updateActiveSpeakerTranslation(speakerId, partialTranslations[speakerId] || "Translating...");
     
     // Better error handling with retries
     const maxRetries = Config.MAX_RETRIES;
@@ -146,6 +181,15 @@ async function translateText(speakerId, text, inputLang, outputLang) {
     // Add to cache
     translationCache.set(cacheKey, translatedText);
     
+    // Update partial translations for this speaker
+    partialTranslations[speakerId] = translatedText;
+    
+    // Update active speaker with the new translation
+    updateActiveSpeakerTranslation(speakerId, translatedText);
+    
+    // Clear in-progress flag
+    delete translationInProgress[speakerId];
+    
     // Limit cache size to avoid memory leaks
     if (translationCache.size > 500) {
       // Delete oldest entries (first 100)
@@ -157,21 +201,61 @@ async function translateText(speakerId, text, inputLang, outputLang) {
     translationRetryCount[speakerId] = 0;
     
     debugLog(`Translation complete: ${translatedText.substring(0, 40)}...`);
+    debugLog(`Translation update: ${translatedText.substring(0, 40)}...`);
+    
     return translatedText;
   } catch (error) {
     console.error("Translation error:", error);
     debugLog(`Translation error: ${error.message}`);
+    
+    // Clear in-progress flag
+    delete translationInProgress[speakerId];
     
     // Increment retry count
     translationRetryCount[speakerId]++;
     
     // If we've tried too many times, just return a fallback message
     if (translationRetryCount[speakerId] > 3) {
-      return "[Translation unavailable]";
+      // Store as partial translation
+      const errorMsg = "[Translation unavailable]";
+      partialTranslations[speakerId] = errorMsg;
+      updateActiveSpeakerTranslation(speakerId, errorMsg);
+      return errorMsg;
+    }
+    
+    // Return the last partial translation if we have one
+    if (partialTranslations[speakerId]) {
+      return partialTranslations[speakerId];
     }
     
     // For the first few errors, return a temporary message but don't retry automatically
-    return "Translating..."; // Return a temporary message
+    const tempMsg = "Translating...";
+    updateActiveSpeakerTranslation(speakerId, tempMsg);
+    return tempMsg;
+  }
+}
+
+/**
+ * Update the active speaker's translation in real-time
+ * @param {string} speakerId - The speaker ID
+ * @param {string} translatedText - The translated text
+ */
+function updateActiveSpeakerTranslation(speakerId, translatedText) {
+  // Get active speakers if available in window
+  const getActiveSpeakers = window.getActiveSpeakers || function() { return {}; };
+  const activeSpeakers = getActiveSpeakers();
+  
+  // Update translation if speaker is active
+  if (activeSpeakers[speakerId] && activeSpeakers[speakerId].active) {
+    // Only update if text is different to avoid unnecessary UI updates
+    if (activeSpeakers[speakerId].translatedText !== translatedText) {
+      activeSpeakers[speakerId].translatedText = translatedText;
+      
+      // Force UI update by explicitly triggering any available display update function
+      if (window.forceDisplayUpdate && typeof window.forceDisplayUpdate === 'function') {
+        window.forceDisplayUpdate(activeSpeakers);
+      }
+    }
   }
 }
 
@@ -227,6 +311,8 @@ function clearTranslationTimers() {
   // Reset translation states
   lastTranslationRequestTime = {};
   pendingTranslations = {};
+  partialTranslations = {}; // Also clear partial translations
+  translationInProgress = {}; // Clear in-progress flags
   translationRetryCount = {}; // Reset retry counts too
   
   // No need to clear translation cache - it can be reused

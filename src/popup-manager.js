@@ -629,6 +629,9 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
     for (const speakerId in activeSpeakers) {
       const speaker = activeSpeakers[speakerId];
       
+      // Skip if speaker object is empty or incomplete
+      if (!speaker || !speaker.speaker) continue;
+      
       // Initialize speaker object if needed
       if (!accumulatedTranslations[speakerId]) {
         accumulatedTranslations[speakerId] = {
@@ -642,6 +645,9 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
         }
       }
       
+      // Skip update if there's no content to display
+      if (!speaker.utteranceId || speaker.fullText === "") continue;
+      
       // Update or add the active utterance
       accumulatedTranslations[speakerId].utterances[speaker.utteranceId] = {
         id: speaker.utteranceId,
@@ -653,9 +659,6 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
         active: true
       };
     }
-    
-    // Create a fragment to efficiently build the DOM
-    const fragment = popupWindow.document.createDocumentFragment();
     
     // Process speakers in the display order
     for (const speakerId of speakerDisplayOrder) {
@@ -704,12 +707,6 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
       // Get utterances container
       const utterancesContainer = speakerBlock.querySelector(`.utterances-container`);
       
-      // Track existing utterance elements
-      const existingUtteranceElements = new Set();
-      Array.from(utterancesContainer.querySelectorAll('.utterance')).forEach(el => {
-        existingUtteranceElements.add(el.dataset.utteranceId);
-      });
-      
       // Process utterances
       utterances.forEach(utterance => {
         const utteranceId = utterance.id;
@@ -755,9 +752,9 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
             utterancesContainer.appendChild(utteranceEl);
           }
         } else {
-          // Update existing utterance
+          // Update existing utterance text if it has changed
           const textDiv = utteranceEl.querySelector('.utterance-text');
-          if (textDiv) {
+          if (textDiv && textDiv.textContent !== utterance.translated) {
             textDiv.textContent = utterance.translated || "";
           }
           
@@ -767,20 +764,14 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
           } else {
             utteranceEl.classList.remove('active');
           }
-          
-          // Add to our tracking set since we're keeping this element
-          existingUtteranceElements.add(utteranceId);
         }
       });
       
-      // If new speaker block, add to fragment
+      // If new speaker block, add to container
       if (isNewSpeakerBlock) {
-        fragment.appendChild(speakerBlock);
+        subtitlesContainer.appendChild(speakerBlock);
       }
     }
-    
-    // Append all new speaker blocks to the container
-    subtitlesContainer.appendChild(fragment);
     
     // Auto-scroll if enabled
     if (shouldAutoScroll) {

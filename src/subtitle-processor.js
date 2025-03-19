@@ -7,6 +7,7 @@ import {
   setActiveTimerForSpeaker 
 } from './translation-service.js';
 import { updateTranslationsDisplay } from './popup-manager.js';
+import { updateDisplay as updateInlineDisplay } from './direct-content-display.js';
 
 // Speech detection variables
 let activeSpeakers = {}; // Map of active speakers and their current utterances
@@ -24,6 +25,9 @@ let translationTimers = {};
 
 // Minimum length for translation
 const MIN_LENGTH_FOR_TRANSLATION = 2;
+
+// Reasonable translation update interval - not too frequent
+const TRANSLATION_UPDATE_INTERVAL = 1000; // 1 second minimum between translation requests
 
 /**
  * Reset known subtitles to avoid processing past items
@@ -144,7 +148,7 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
   
   // Rate limit processing to avoid performance issues
   const now = Date.now();
-  if (now - lastProcessedTime < Config.DEBOUNCE_DELAY) {
+  if (now - lastProcessedTime < Config.DEBOUNCE_DELAY / 2) { // Half the default debounce delay for more frequent processing
     return;
   }
   lastProcessedTime = now;
@@ -214,14 +218,22 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
         // Update the time of the last segment
         activeSpeakers[speakerId].lastTime = now;
         
+        const hasContentChanged = activeSpeakers[speakerId].fullText !== text;
+        
         // Update the full text - use the newest, most complete text
-        if (text.length > activeSpeakers[speakerId].fullText.length) {
+        if (text.length > activeSpeakers[speakerId].fullText.length || hasContentChanged) {
           activeSpeakers[speakerId].fullText = text;
           lastFullTextBySpeaker[speakerId] = text;
           
           // Also update avatar if available
           if (speakerAvatar && !activeSpeakers[speakerId].avatar) {
             activeSpeakers[speakerId].avatar = speakerAvatar;
+          }
+          
+          // If content changed, force UI update to show "Translating..." initially
+          if (hasContentChanged) {
+            updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+            updateInlineDisplay(translatedUtterances, activeSpeakers);
           }
         }
         
@@ -256,18 +268,34 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
         
         // Schedule translation with delay
         scheduleTranslation(speakerId, inputLang, outputLang);
+        
+        // Immediately update display to show "Translating..." for this new speaker
+        updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+        updateInlineDisplay(translatedUtterances, activeSpeakers);
       }
     }
     
     // Update the display if we processed anything
     if (currentTexts.size > 0) {
-      updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+      forceDisplayUpdate();
     }
   } catch (error) {
     console.error("Error processing subtitles:", error);
     debugLog(`Subtitle processing error: ${error.message}`);
   }
 }
+
+/**
+ * Force update displays
+ */
+function forceDisplayUpdate() {
+  // Update both display types
+  updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+  updateInlineDisplay(translatedUtterances, activeSpeakers);
+}
+
+// Expose for use by translation service
+window.forceDisplayUpdate = forceDisplayUpdate;
 
 /**
  * Schedule translation with delay
@@ -281,11 +309,24 @@ function scheduleTranslation(speakerId, inputLang, outputLang) {
     clearTimeout(translationTimers[speakerId]);
   }
   
-  // Schedule new translation after delay
+  // For immediate UI feedback, set a placeholder if there's no translation yet
+  if (activeSpeakers[speakerId] && 
+      (!activeSpeakers[speakerId].translatedText || 
+       activeSpeakers[speakerId].translatedText === "..." ||
+       activeSpeakers[speakerId].translatedText === "Translating...")) {
+    activeSpeakers[speakerId].translatedText = "Translating...";
+    // Update display to show the "Translating..." message
+    forceDisplayUpdate();
+  }
+  
+  // Schedule new translation immediately for first translation
+  const initialDelay = activeSpeakers[speakerId] && activeSpeakers[speakerId].translatedText === "Translating..." ? 
+    0 : TRANSLATION_UPDATE_INTERVAL;
+  
   translationTimers[speakerId] = setTimeout(() => {
     translateAndUpdateUtterance(speakerId, inputLang, outputLang);
     delete translationTimers[speakerId];
-  }, Config.TRANSLATION_THROTTLE);
+  }, initialDelay);
 }
 
 /**
@@ -303,40 +344,58 @@ async function translateAndUpdateUtterance(speakerId, inputLang, outputLang) {
   // Skip translating very short text
   if (textToTranslate.length < MIN_LENGTH_FOR_TRANSLATION) {
     utterance.translatedText = "...";
-    updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+    forceDisplayUpdate();
     return;
   }
   
   debugLog(`Translating for ${speakerId}: ${textToTranslate.substring(0, 40)}...`);
   
-  // Translate the text
-  const translatedText = await translateText(speakerId, textToTranslate, inputLang, outputLang);
-  
-  // If translation was throttled or failed, it will return null
-  if (translatedText === null) return;
-  
-  // If this speaker is still active
-  if (activeSpeakers[speakerId]) {
-    // Set the translated text
-    activeSpeakers[speakerId].translatedText = translatedText || "Translating...";
+  try {
+    // Translate the text
+    const translatedText = await translateText(speakerId, textToTranslate, inputLang, outputLang);
     
-    // Log the translation
-    debugLog(`Translation complete: ${(translatedText || "").substring(0, 40)}...`);
-    
-    // Update our map of translated utterances
-    updateTranslatedUtterancesMap(speakerId, {
-      id: activeSpeakers[speakerId].utteranceId,
-      speaker: activeSpeakers[speakerId].speaker,
-      speakerId: speakerId,
-      original: activeSpeakers[speakerId].fullText,
-      translated: translatedText,
-      timestamp: new Date().toLocaleTimeString(),
-      active: true,
-      avatar: activeSpeakers[speakerId].avatar
-    });
-    
-    // Immediately update the display to show progress
-    updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+    // If this speaker is still active
+    if (activeSpeakers[speakerId]) {
+      // Set the translated text - even if partial or incomplete
+      if (translatedText && translatedText !== activeSpeakers[speakerId].translatedText) {
+        activeSpeakers[speakerId].translatedText = translatedText;
+        
+        // Log the translation
+        debugLog(`Translation update: ${(translatedText || "").substring(0, 40)}...`);
+        
+        // Update our map of translated utterances with current (possibly partial) translation
+        updateTranslatedUtterancesMap(speakerId, {
+          id: activeSpeakers[speakerId].utteranceId,
+          speaker: activeSpeakers[speakerId].speaker,
+          speakerId: speakerId,
+          original: activeSpeakers[speakerId].fullText,
+          translated: translatedText,
+          timestamp: new Date().toLocaleTimeString(),
+          active: true,
+          avatar: activeSpeakers[speakerId].avatar
+        });
+        
+        // Force update of both display types
+        forceDisplayUpdate();
+        
+        // If still active and text has changed, schedule another translation soon
+        if (activeSpeakers[speakerId].active && textToTranslate.length > 20) {
+          translationTimers[speakerId] = setTimeout(() => {
+            translateAndUpdateUtterance(speakerId, inputLang, outputLang);
+            delete translationTimers[speakerId];
+          }, TRANSLATION_UPDATE_INTERVAL);
+        }
+      }
+    }
+  } catch (error) {
+    console.error("Error in translateAndUpdateUtterance:", error);
+    // If translation failed, don't stop trying - schedule another attempt
+    if (activeSpeakers[speakerId] && activeSpeakers[speakerId].active) {
+      translationTimers[speakerId] = setTimeout(() => {
+        translateAndUpdateUtterance(speakerId, inputLang, outputLang);
+        delete translationTimers[speakerId];
+      }, TRANSLATION_UPDATE_INTERVAL);
+    }
   }
 }
 
@@ -422,7 +481,7 @@ async function finalizeSpeech(speakerId, inputLang, outputLang) {
   clearActiveTimerForSpeaker(speakerId, 'finalize');
   
   // Update the display
-  updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+  forceDisplayUpdate();
 }
 
 /**
@@ -453,7 +512,7 @@ function clearSubtitleData() {
     lastFullTextBySpeaker = {};
     
     // Update display with empty data
-    updateTranslationsDisplay({}, {});
+    forceDisplayUpdate();
   } finally {
     // Always reset the clearing flag
     setTimeout(() => {
