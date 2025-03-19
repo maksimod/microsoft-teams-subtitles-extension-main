@@ -22,6 +22,7 @@ import {
 
 
 let delay_update = 250;
+let alert_delay = 100;
 
 // Wrap the entire script in a self-executing function to avoid global scope pollution
 (async function () {
@@ -94,7 +95,7 @@ let delay_update = 250;
         if (document.visibilityState === 'visible') {
           setTimeout(() => {
             alert("Failed to connect to translation API. Please check your API key or try again later.");
-          }, 100);
+          }, alert_delay);
         }
       }
       
