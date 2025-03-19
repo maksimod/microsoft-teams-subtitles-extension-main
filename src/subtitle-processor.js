@@ -233,6 +233,7 @@ function processSubtitles(isTranslationActive, inputLang, outputLang) {
           // If content changed, force UI update to show "Translating..." initially
           if (hasContentChanged) {
             updateTranslationsDisplay(translatedUtterances, activeSpeakers);
+            updateInlineDisplay(translatedUtterances, activeSpeakers);
           }
         }
         
