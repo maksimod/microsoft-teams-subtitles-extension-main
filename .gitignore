@@ -1,7 +1,8 @@
 .env
 
 dist/popup.html
-
+dist/popup.js
+dist/manifest.json
 
 /node_modules/
 node_modules/
