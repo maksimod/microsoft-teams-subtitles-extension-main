@@ -8,7 +8,7 @@ const Config = {
   DEFAULT_OUTPUT_LANG: "en",
   
   // Speech detection and buffering control
-  SPEECH_SEGMENT_TIMEOUT: 3000,  // Time between speech segments
+  SPEECH_SEGMENT_TIMEOUT: 2000,  // Time between speech segments
   TRANSLATION_THROTTLE: 1000,    // Delay between translation requests
   DEBOUNCE_DELAY: 100,           // Delay for debouncing DOM updates
   
@@ -24,7 +24,7 @@ const Config = {
   
   // Performance and stability
   MAX_STORED_UTTERANCES: 10,     // Limit for utterances per speaker
-  SUBTITLE_PROCESSING_INTERVAL: 300, // Rate limiting for subtitle processing
+  SUBTITLE_PROCESSING_INTERVAL: 500, // Rate limiting for subtitle processing
   OBSERVER_UPDATE_INTERVAL: 30000 // Health check interval for observer
 };
 
