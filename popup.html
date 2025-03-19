@@ -93,6 +93,18 @@
         padding-bottom: 5px;
         color: #333;
       }
+      .radio-group {
+        display: flex;
+        margin: 10px 0;
+      }
+      .radio-option {
+        margin-right: 15px;
+        display: flex;
+        align-items: center;
+      }
+      .radio-option input {
+        margin-right: 5px;
+      }
       .tooltip {
         position: relative;
         display: inline-block;
@@ -180,6 +192,29 @@
       <option value="pt">Portuguese</option>
       <option value="ar">Arabic</option>
     </select>
+    
+    <div class="section-header">
+      Display Mode
+      <div class="tooltip">
+        <span class="tooltip-icon">?</span>
+        <span class="tooltip-text">Choose how translations are displayed during the meeting</span>
+      </div>
+    </div>
+    
+    <div class="radio-group">
+      <div class="radio-option">
+        <input type="radio" id="displayPopup" name="displayMode" value="popup" checked>
+        <label for="displayPopup">Popup</label>
+      </div>
+      <div class="radio-option">
+        <input type="radio" id="displayInline" name="displayMode" value="inline">
+        <label for="displayInline">Overlay</label>
+      </div>
+      <div class="radio-option">
+        <input type="radio" id="displayBoth" name="displayMode" value="both">
+        <label for="displayBoth">Both</label>
+      </div>
+    </div>
 
     <button id="applyButton">Apply Settings</button>
     
