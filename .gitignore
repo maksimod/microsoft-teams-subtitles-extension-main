@@ -4,3 +4,6 @@ dist/content.js*
 
 /node_modules/
 node_modules/
+
+*.key
+secret_key

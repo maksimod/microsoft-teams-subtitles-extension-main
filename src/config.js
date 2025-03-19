@@ -1,7 +1,7 @@
 // Configuration settings
 const Config = {
   // API key for OpenAI
-  OPENAI_API_KEY: "KEY",
+  OPENAI_API_KEY: process.env.OPENAI_API_KEY || "",
   
   // Default languages
   DEFAULT_INPUT_LANG: "auto",

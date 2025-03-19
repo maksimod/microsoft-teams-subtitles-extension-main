@@ -6,7 +6,7 @@ import {
   checkApiConnection
 } from './translation-service.js';
 import { 
-  openTranslationsWindow,
+  openTranslationsWindow, 
   updateTranslationsDisplay,
   setTranslationStatus,
   stopPopupCheck,
@@ -20,6 +20,10 @@ import {
   resetKnownSubtitles
 } from './subtitle-processor.js';
 
+
+let delay_update = 250;
+let alert_delay = 100;
+
 // Wrap the entire script in a self-executing function to avoid global scope pollution
 (async function () {
   // Check if the script has already run
@@ -30,7 +34,7 @@ import {
   let inputLang = Config.DEFAULT_INPUT_LANG;
   let outputLang = Config.DEFAULT_OUTPUT_LANG;
   let isTranslationActive = false;
-  let displayMode = 'popup'; // Only 'popup' mode is now supported
+  let displayMode = 'popup'; // 'popup' or 'inline'
   
   // Reference to the MutationObserver
   let observer = null;
@@ -91,7 +95,7 @@ import {
         if (document.visibilityState === 'visible') {
           setTimeout(() => {
             alert("Failed to connect to translation API. Please check your API key or try again later.");
-          }, 100);
+          }, alert_delay);
         }
       }
       
@@ -121,19 +125,26 @@ import {
     
     debugLog(`Starting translation with input: ${inputLang}, output: ${outputLang}, display: ${displayMode}`);
     
-    // Initialize popup display - ВАЖНО: открывает перемещаемое окно перевода
+    // Open the translations window
     openTranslationsWindow(updateTranslationsDisplay);
+    
+    // Update translation status
     setTranslationStatus(true);
     
-    // Only observe the caption container instead of the entire body
+    // Enhanced caption container detection
     const findCaptionContainer = () => {
-      // Try to find the caption container element
+      // Try to find the caption container element with more comprehensive selectors
       const possibleContainers = [
         document.querySelector('[role="dialog"][aria-label*="caption"], [data-tid="meetup-captions-container"]'),
         document.querySelector('[data-tid="closed-caption-container"]'),
         document.querySelector('.cc-container'),
         document.querySelector('.ts-captions-container'),
-        document.querySelector('[class*="caption-container"]')
+        document.querySelector('[class*="caption-container"]'),
+        document.querySelector('[data-tid*="caption"]'),
+        document.querySelector('[class*="captions"]'),
+        // Add more Teams version-specific selectors
+        document.querySelector('[data-tid="caption-container-root"]'),
+        document.querySelector('[class*="captionContainer"]')
       ];
       
       return possibleContainers.find(el => el);
@@ -169,10 +180,10 @@ import {
     // Add a safety check to periodically ensure everything is still working
     startSafetyChecks();
     
-    // Force an immediate update
+    // Force an immediate update for both display methods
     setTimeout(() => {
-      updateTranslationsDisplay(getTranslatedUtterances(), getActiveSpeakers());
-    }, 100);
+        updateTranslationsDisplay(getTranslatedUtterances(), getActiveSpeakers());
+    }, 250);
     
     return { status: "success" };
   }
@@ -198,7 +209,7 @@ import {
             debounceProcessSubtitles(isTranslationActive, inputLang, outputLang);
           });
           
-          // Find caption container again using the improved selector list
+          // Find caption container again
           const captionContainer = findCaptionContainer();
           
           // Reattach it
@@ -230,6 +241,7 @@ import {
           getTranslatedUtterances(),
           getActiveSpeakers()
         );
+        
       }
     }, Config.OBSERVER_UPDATE_INTERVAL); // Check every 30 seconds
   }
@@ -244,15 +256,19 @@ import {
       // Disconnect the observer
       if (observer) {
         observer.disconnect();
+        observer = null;
       }
       
       // Clear all translation timers
       clearTranslationTimers();
       
-      // Stop popup check and cleanup
+      // Update displays based on mode
+        // Stop popup check
       stopPopupCheck();
-      setTranslationStatus(false);
       
+      // Update status in popup
+      setTranslationStatus(false);
+
       // Stop safety checks
       if (safetyCheckTimer) {
         clearInterval(safetyCheckTimer);
@@ -265,15 +281,24 @@ import {
     return { status: "error", message: "Translation not active" };
   }
   
-  // Helper function to find caption container
+  // Enhanced caption container detection
   function findCaptionContainer() {
-    // Try to find the caption container element
+    // Try to find the caption container element with more comprehensive selectors
     const possibleContainers = [
       document.querySelector('[role="dialog"][aria-label*="caption"], [data-tid="meetup-captions-container"]'),
       document.querySelector('[data-tid="closed-caption-container"]'),
       document.querySelector('.cc-container'),
       document.querySelector('.ts-captions-container'),
-      document.querySelector('[class*="caption-container"]')
+      document.querySelector('[class*="caption-container"]'),
+      document.querySelector('[data-tid*="caption"]'),
+      document.querySelector('[class*="captions"]'),
+      // Add more Teams version-specific selectors
+      document.querySelector('[data-tid="caption-container-root"]'),
+      document.querySelector('[class*="captionContainer"]'),
+      document.querySelector('[data-tid*="caption"]'),
+      document.querySelector('[aria-label*="caption"]'),
+      document.querySelector('[class*="captions"]'),
+      document.querySelector('[role="dialog"][aria-label*="captions"]')
     ];
     
     return possibleContainers.find(el => el);
@@ -286,8 +311,10 @@ import {
       inputLang = message.inputLang || Config.DEFAULT_INPUT_LANG;
       outputLang = message.outputLang || Config.DEFAULT_OUTPUT_LANG;
       
-      // We only support popup mode now
-      displayMode = 'popup';
+      // Update display mode if provided
+      if (message.displayMode) {
+        displayMode = message.displayMode;
+      }
       
       // Start translation
       startTranslation().then(result => {
@@ -313,12 +340,24 @@ import {
       });
       return true;
     } else if (message.action === "setDisplayMode") {
-      // We only support popup mode now
-      displayMode = 'popup';
+      // Update display mode
+      displayMode = message.displayMode || 'popup';
       
-      // Update popup if translation is active
+      // Update displays based on new mode
       if (isTranslationActive) {
-        updateTranslationsDisplay(getTranslatedUtterances(), getActiveSpeakers());
+        if (displayMode === 'popup') {
+          openTranslationsWindow(updateTranslationsDisplay);
+          setTranslationStatus(true);
+        } else {
+          closePopupWindow();
+        }
+        
+        // Force an immediate update
+        setTimeout(() => {
+          if (displayMode === 'popup') {
+            updateTranslationsDisplay(getTranslatedUtterances(), getActiveSpeakers());
+          }
+        }, delay_update);
       }
       
       sendResponse({ status: "success", displayMode: displayMode });
@@ -341,7 +380,7 @@ import {
     }
   });
   
-  // Regular updates for displaying translations
+  // Regular updates - don't make these too frequent to avoid performance issues
   let updateDisplayInterval = null;
   
   function startDisplayUpdates() {
@@ -353,13 +392,16 @@ import {
     // Set new interval
     updateDisplayInterval = setInterval(() => {
       if (isTranslationActive) {
-        // Only update popup display
-        updateTranslationsDisplay(
-          getTranslatedUtterances(),
-          getActiveSpeakers()
-        );
+        // Update displays based on mode
+        if (displayMode === 'popup') {
+          updateTranslationsDisplay(
+            getTranslatedUtterances(),
+            getActiveSpeakers()
+          );
+        }
+        
       }
-    }, 250); // Update 4 times per second
+    }, 1000); // Update 4 times per second
   }
   
   // Start display updates
