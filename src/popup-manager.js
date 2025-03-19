@@ -14,16 +14,22 @@ let popupInitTimeout = null;
 let lastPopupCreationTime = 0;
 
 // Track all accumulated translations by speaker and utterance ID
-let accumulatedTranslations = {};
+const accumulatedTranslations = {};
 
 // Maintain speaker history to preserve order
-let speakerDisplayOrder = [];
+const speakerDisplayOrder = [];
+
+// Check if current browser supports native clipboard API
+const hasNativeClipboard = () => {
+  return navigator.clipboard && typeof navigator.clipboard.writeText === 'function';
+};
 
 /**
- * Open the translations window
+ * Open the translations window with improved styling and performance
  * @param {Function} updateTranslationsDisplay - Function to update translations
  * @returns {Window|null} - Reference to the popup window
  */
+// src/popup-manager.js - замените или исправьте функцию openTranslationsWindow
 function openTranslationsWindow(updateTranslationsDisplay) {
   try {
     // Prevent reopening too frequently
@@ -35,13 +41,15 @@ function openTranslationsWindow(updateTranslationsDisplay) {
     
     // Only create new window if needed
     if (!popupWindow || popupWindow.closed) {
-      popupWindow = window.open("", "TranslatedSubtitles", "width=600,height=500");
+      // Используем простое и гарантированно работающее открытие окна
+      popupWindow = window.open("", "TranslatedSubtitles", "width=600,height=500,resizable=yes");
       
       if (!popupWindow) {
         console.error("Popup window was blocked. Please allow popups for this site.");
         return null;
       }
       
+      // Используем исходное содержимое popup, которое работало
       const popupContent = `
         <!DOCTYPE html>
         <html lang="en">
@@ -376,6 +384,9 @@ function setupPopupEventListeners(updateTranslationsDisplay) {
         translationsTab.classList.remove('active');
         subtitlesContainer.style.display = 'none';
         debugContainer.style.display = 'block';
+        
+        // Update debug logs when tab is shown
+        updateDebugLogs();
       });
     }
     
@@ -385,9 +396,18 @@ function setupPopupEventListeners(updateTranslationsDisplay) {
       clearBtn.addEventListener('click', function() {
         if (window.clearAllTranslations && typeof window.clearAllTranslations === 'function') {
           // Reset our accumulated translations
-          accumulatedTranslations = {};
-          speakerDisplayOrder = [];
+          Object.keys(accumulatedTranslations).forEach(key => {
+            delete accumulatedTranslations[key];
+          });
+          
+          // Clear speaker display order
+          speakerDisplayOrder.length = 0;
+          
+          // Call global clear function
           window.clearAllTranslations();
+          
+          // Show feedback
+          showFeedback('Translations cleared!');
         }
       });
     }
@@ -398,46 +418,27 @@ function setupPopupEventListeners(updateTranslationsDisplay) {
       copyBtn.addEventListener('click', function() {
         if (!subtitlesContainer) return;
         
+        // Format text nicely with speaker name and utterances
         const text = Array.from(subtitlesContainer.querySelectorAll('.speaker-block')).map(block => {
           const speakerNameEl = block.querySelector('.speaker-name');
           const speaker = speakerNameEl ? speakerNameEl.textContent.trim() : 'Unknown';
           const utterances = Array.from(block.querySelectorAll('.utterance-text')).map(u => u.textContent);
-          return speaker + ':\n' + utterances.join('\n');
+          return `${speaker}:\n${utterances.join('\n')}`;
         }).join('\n\n');
         
-        popupWindow.navigator.clipboard.writeText(text)
-          .then(() => {
-            // Show a temporary success message
-            const copyFeedback = popupWindow.document.createElement('div');
-            copyFeedback.textContent = 'Copied to clipboard!';
-            copyFeedback.style.position = 'fixed';
-            copyFeedback.style.bottom = '60px';
-            copyFeedback.style.left = '50%';
-            copyFeedback.style.transform = 'translateX(-50%)';
-            copyFeedback.style.backgroundColor = '#0078d4';
-            copyFeedback.style.color = 'white';
-            copyFeedback.style.padding = '8px 16px';
-            copyFeedback.style.borderRadius = '4px';
-            copyFeedback.style.zIndex = '1000';
-            copyFeedback.style.opacity = '0';
-            copyFeedback.style.transition = 'opacity 0.3s ease';
-            
-            popupWindow.document.body.appendChild(copyFeedback);
-            
-            // Fade in
-            setTimeout(() => {
-              copyFeedback.style.opacity = '1';
-            }, 10);
-            
-            // Fade out and remove
-            setTimeout(() => {
-              copyFeedback.style.opacity = '0';
-              setTimeout(() => {
-                popupWindow.document.body.removeChild(copyFeedback);
-              }, 300);
-            }, 2000);
-          })
-          .catch(err => alert('Failed to copy: ' + err.message));
+        // Try to use clipboard API if available
+        if (hasNativeClipboard()) {
+          popupWindow.navigator.clipboard.writeText(text)
+            .then(() => {
+              showFeedback('Copied to clipboard!');
+            })
+            .catch(err => {
+              console.error('Failed to copy:', err);
+              fallbackCopy(text);
+            });
+        } else {
+          fallbackCopy(text);
+        }
       });
     }
     
@@ -468,11 +469,101 @@ function setupPopupEventListeners(updateTranslationsDisplay) {
           }
         }
       });
+      
+      // Also listen for touch events for mobile devices
+      subtitlesContainer.addEventListener('touchstart', function() {
+        const autoScrollCheckbox = popupWindow.document.getElementById('auto-scroll-checkbox');
+        if (autoScrollCheckbox && autoScrollCheckbox.checked) {
+          // Save current scroll position to check if user scrolls up
+          subtitlesContainer.dataset.scrollStartY = subtitlesContainer.scrollTop;
+        }
+      });
+      
+      subtitlesContainer.addEventListener('touchend', function() {
+        const autoScrollCheckbox = popupWindow.document.getElementById('auto-scroll-checkbox');
+        if (autoScrollCheckbox && autoScrollCheckbox.checked) {
+          const startY = parseInt(subtitlesContainer.dataset.scrollStartY || '0');
+          // If scrolled up significantly, disable auto-scroll
+          if (subtitlesContainer.scrollTop < startY - 50) {
+            autoScrollCheckbox.checked = false;
+          }
+        }
+      });
     }
+    
+    // Add window close handler
+    popupWindow.addEventListener('beforeunload', function() {
+      popupWindow = null;
+    });
     
     debugLog("Popup event listeners set up successfully");
   } catch (error) {
     console.error("Error setting up popup event listeners:", error);
+    debugLog(`Error setting up popup: ${error.message}`);
+  }
+}
+
+/**
+ * Show feedback message in popup
+ * @param {string} message - Message to show
+ */
+function showFeedback(message) {
+  if (!isPopupAccessible()) return;
+  
+  try {
+    // Check if feedback element already exists
+    let feedbackEl = popupWindow.document.querySelector('.feedback');
+    
+    // Create if it doesn't exist
+    if (!feedbackEl) {
+      feedbackEl = popupWindow.document.createElement('div');
+      feedbackEl.className = 'feedback';
+      popupWindow.document.body.appendChild(feedbackEl);
+    }
+    
+    // Set message and show
+    feedbackEl.textContent = message;
+    feedbackEl.style.opacity = '1';
+    
+    // Hide after delay
+    setTimeout(() => {
+      feedbackEl.style.opacity = '0';
+    }, 2000);
+  } catch (error) {
+    console.error("Error showing feedback:", error);
+  }
+}
+
+/**
+ * Fallback copy method using document.execCommand
+ * @param {string} text - Text to copy
+ */
+function fallbackCopy(text) {
+  try {
+    // Create temporary textarea
+    const textarea = popupWindow.document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    popupWindow.document.body.appendChild(textarea);
+    textarea.focus();
+    textarea.select();
+    
+    // Execute copy command
+    const successful = popupWindow.document.execCommand('copy');
+    
+    // Remove temporary element
+    popupWindow.document.body.removeChild(textarea);
+    
+    // Show feedback
+    if (successful) {
+      showFeedback('Copied to clipboard!');
+    } else {
+      showFeedback('Could not copy. Try selecting and copying manually.');
+    }
+  } catch (err) {
+    console.error('Fallback copy failed:', err);
+    showFeedback('Could not copy. Try selecting and copying manually.');
   }
 }
 
@@ -503,20 +594,13 @@ function updateDebugLogs() {
       // Only update if there are logs
       if (logs.length === 0) return;
       
-      // Clear container
-      debugContainer.innerHTML = '';
+      // Create HTML content
+      const logsHTML = logs.map(log => 
+        `<div class="debug-entry">${log}</div>`
+      ).join('');
       
-      // Add logs as a batch
-      const fragment = popupWindow.document.createDocumentFragment();
-      
-      for (const log of logs) {
-        const logDiv = popupWindow.document.createElement('div');
-        logDiv.className = 'debug-entry';
-        logDiv.textContent = log;
-        fragment.appendChild(logDiv);
-      }
-      
-      debugContainer.appendChild(fragment);
+      // Set HTML content at once for better performance
+      debugContainer.innerHTML = logsHTML;
       
       // Auto-scroll to bottom
       debugContainer.scrollTop = debugContainer.scrollHeight;
@@ -561,6 +645,8 @@ function stopPopupCheck() {
  * @returns {HTMLElement} - Avatar element
  */
 function createSpeakerAvatar(speakerName) {
+  if (!isPopupAccessible()) return null;
+  
   const avatar = popupWindow.document.createElement('div');
   avatar.className = 'speaker-avatar';
   
@@ -599,6 +685,9 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
     // Check if auto-scroll is enabled
     const autoScrollCheckbox = popupWindow.document.getElementById('auto-scroll-checkbox');
     const shouldAutoScroll = autoScrollCheckbox && autoScrollCheckbox.checked;
+    
+    // Save current scroll position
+    const scrollPosition = subtitlesContainer.scrollTop;
     
     // Process finalized utterances and add them to accumulatedTranslations
     for (const speakerId in translatedUtterances) {
@@ -660,6 +749,9 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
       };
     }
     
+    // Prepare fragment for better performance
+    const fragment = popupWindow.document.createDocumentFragment();
+    
     // Process speakers in the display order
     for (const speakerId of speakerDisplayOrder) {
       if (!accumulatedTranslations[speakerId]) continue;
@@ -673,11 +765,12 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
       // Sort utterances by ID (which is timestamp-based)
       utterances.sort((a, b) => a.id - b.id);
       
-      // Get or create speaker block
+      // Check if speaker block already exists
       let speakerBlock = popupWindow.document.getElementById(`speaker-${speakerId}`);
       const isNewSpeakerBlock = !speakerBlock;
       
       if (isNewSpeakerBlock) {
+        // Create new speaker block
         speakerBlock = popupWindow.document.createElement('div');
         speakerBlock.className = 'speaker-block';
         speakerBlock.id = `speaker-${speakerId}`;
@@ -702,138 +795,159 @@ function updateTranslationsDisplay(translatedUtterances, activeSpeakers) {
         utterancesContainer.className = 'utterances-container';
         utterancesContainer.id = `utterances-${speakerId}`;
         speakerBlock.appendChild(utterancesContainer);
+        
+        // Add to fragment
+        fragment.appendChild(speakerBlock);
       }
       
-      // Get utterances container
-      const utterancesContainer = speakerBlock.querySelector(`.utterances-container`);
-      
-      // Process utterances
-      utterances.forEach(utterance => {
-        const utteranceId = utterance.id;
-        
-        // Check if utterance element already exists
-        let utteranceEl = utterancesContainer.querySelector(`.utterance[data-utterance-id="${utteranceId}"]`);
-        const isNewUtterance = !utteranceEl;
-        
-        if (isNewUtterance) {
-          // Create new utterance element
-          utteranceEl = popupWindow.document.createElement('div');
-          utteranceEl.className = utterance.active ? 'utterance active' : 'utterance';
-          utteranceEl.dataset.utteranceId = utteranceId;
-          
-          // Utterance text
-          const textDiv = popupWindow.document.createElement('div');
-          textDiv.className = 'utterance-text';
-          textDiv.textContent = utterance.translated || "";
-          utteranceEl.appendChild(textDiv);
-          
-          // Timestamp
-          const timeDiv = popupWindow.document.createElement('div');
-          timeDiv.className = 'timestamp';
-          timeDiv.textContent = utterance.timestamp || "";
-          utteranceEl.appendChild(timeDiv);
-          
-          // Add to container (at the correct position by time)
-          let inserted = false;
-          Array.from(utterancesContainer.querySelectorAll('.utterance')).some(existingUtterance => {
-            const existingId = parseInt(existingUtterance.dataset.utteranceId);
-            const currentId = parseInt(utteranceId);
-            
-            if (existingId > currentId) {
-              utterancesContainer.insertBefore(utteranceEl, existingUtterance);
-              inserted = true;
-              return true;
-            }
-            return false;
-          });
-          
-          // If not inserted (i.e., it's the newest), append to end
-          if (!inserted) {
-            utterancesContainer.appendChild(utteranceEl);
-          }
-        } else {
-          // Update existing utterance text if it has changed
-          const textDiv = utteranceEl.querySelector('.utterance-text');
-          if (textDiv && textDiv.textContent !== utterance.translated) {
-            textDiv.textContent = utterance.translated || "";
-          }
-          
-          // Update active state
-          if (utterance.active) {
-            utteranceEl.classList.add('active');
-          } else {
-            utteranceEl.classList.remove('active');
-          }
-        }
-      });
-      
-      // If new speaker block, add to container
-      if (isNewSpeakerBlock) {
-        subtitlesContainer.appendChild(speakerBlock);
-      }
-    }
-    
-    // Auto-scroll if enabled
-    if (shouldAutoScroll) {
-      subtitlesContainer.scrollTop = subtitlesContainer.scrollHeight;
-    }
-    
-    // Also update debug logs
-    updateDebugLogs();
-  } catch (error) {
-    console.error("Error updating translations display:", error);
-    debugLog(`Error updating display: ${error.message}`);
-  }
+// Get utterances container
+const utterancesContainer = speakerBlock.querySelector(`.utterances-container`) || 
+popupWindow.document.getElementById(`utterances-${speakerId}`);
+
+if (!utterancesContainer) continue;
+
+// Track which utterance IDs we're rendering this round
+const currentUtteranceIds = new Set();
+
+// Process utterances
+utterances.forEach(utterance => {
+const utteranceId = utterance.id;
+currentUtteranceIds.add(utteranceId);
+
+// Check if utterance element already exists
+let utteranceEl = utterancesContainer.querySelector(`.utterance[data-utterance-id="${utteranceId}"]`);
+const isNewUtterance = !utteranceEl;
+
+if (isNewUtterance) {
+// Create new utterance element
+utteranceEl = popupWindow.document.createElement('div');
+utteranceEl.className = utterance.active ? 'utterance active' : 'utterance';
+utteranceEl.dataset.utteranceId = utteranceId;
+
+// Utterance text
+const textDiv = popupWindow.document.createElement('div');
+textDiv.className = 'utterance-text';
+textDiv.textContent = utterance.translated || "";
+utteranceEl.appendChild(textDiv);
+
+// Timestamp
+const timeDiv = popupWindow.document.createElement('div');
+timeDiv.className = 'timestamp';
+timeDiv.textContent = utterance.timestamp || "";
+utteranceEl.appendChild(timeDiv);
+
+// Add to container (at the correct position by time)
+let inserted = false;
+Array.from(utterancesContainer.querySelectorAll('.utterance')).some(existingUtterance => {
+const existingId = parseInt(existingUtterance.dataset.utteranceId);
+const currentId = parseInt(utteranceId);
+
+if (existingId > currentId) {
+utterancesContainer.insertBefore(utteranceEl, existingUtterance);
+inserted = true;
+return true;
+}
+return false;
+});
+
+// If not inserted (i.e., it's the newest), append to end
+if (!inserted) {
+utterancesContainer.appendChild(utteranceEl);
+}
+} else {
+// Update existing utterance text if it has changed
+const textDiv = utteranceEl.querySelector('.utterance-text');
+if (textDiv && textDiv.textContent !== utterance.translated) {
+textDiv.textContent = utterance.translated || "";
+}
+
+// Update active state
+if (utterance.active && !utteranceEl.classList.contains('active')) {
+utteranceEl.classList.add('active');
+} else if (!utterance.active && utteranceEl.classList.contains('active')) {
+utteranceEl.classList.remove('active');
+}
+}
+});
+
+// If this is a pre-existing block, add it back to DOM
+if (!isNewSpeakerBlock && !speakerBlock.parentNode) {
+fragment.appendChild(speakerBlock);
+}
+}
+
+// Efficiently update DOM - replace all content at once
+subtitlesContainer.innerHTML = '';
+subtitlesContainer.appendChild(fragment);
+
+// Auto-scroll if enabled, otherwise restore position
+if (shouldAutoScroll) {
+subtitlesContainer.scrollTop = subtitlesContainer.scrollHeight;
+} else {
+subtitlesContainer.scrollTop = scrollPosition;
+}
+
+// Also update debug logs if debug tab is visible
+const debugTab = popupWindow.document.getElementById('debug-tab');
+if (debugTab && debugTab.classList.contains('active')) {
+updateDebugLogs();
+}
+} catch (error) {
+console.error("Error updating translations display:", error);
+debugLog(`Error updating display: ${error.message}`);
+}
 }
 
 /**
- * Set translation status in popup
- * @param {boolean} isActive - Whether translation is active
- */
+* Set translation status in popup
+* @param {boolean} isActive - Whether translation is active
+*/
 function setTranslationStatus(isActive) {
-  if (!isPopupAccessible()) return;
-  
-  try {
-    const statusBadge = popupWindow.document.getElementById('status-badge');
-    if (statusBadge) {
-      statusBadge.textContent = isActive ? 'Active' : 'Inactive';
-      statusBadge.className = isActive ? 'badge active' : 'badge';
-    }
-  } catch (e) {
-    console.error("Error updating status:", e);
-  }
+if (!isPopupAccessible()) return;
+
+try {
+const statusBadge = popupWindow.document.getElementById('status-badge');
+if (statusBadge) {
+statusBadge.textContent = isActive ? 'Active' : 'Inactive';
+statusBadge.className = isActive ? 'badge active' : 'badge';
+}
+} catch (e) {
+console.error("Error updating status:", e);
+}
 }
 
 /**
- * Clear all accumulated translations
- */
+* Clear all accumulated translations
+*/
 function clearAccumulatedTranslations() {
-  accumulatedTranslations = {};
-  speakerDisplayOrder = [];
+Object.keys(accumulatedTranslations).forEach(key => {
+delete accumulatedTranslations[key];
+});
+speakerDisplayOrder.length = 0;
 }
 
 /**
- * Close popup window
- */
+* Close popup window
+*/
 function closePopupWindow() {
-  if (popupWindow && !popupWindow.closed) {
-    try {
-      popupWindow.close();
-    } catch (e) {
-      console.error("Error closing popup window:", e);
-    }
-  }
-  
-  popupWindow = null;
-  clearAccumulatedTranslations();
+if (popupWindow && !popupWindow.closed) {
+try {
+popupWindow.close();
+} catch (e) {
+console.error("Error closing popup window:", e);
+}
+}
+
+popupWindow = null;
+clearAccumulatedTranslations();
 }
 
 export {
-  openTranslationsWindow,
-  updateTranslationsDisplay,
-  updateDebugLogs,
-  setTranslationStatus,
-  stopPopupCheck,
-  closePopupWindow,
-  clearAccumulatedTranslations
+openTranslationsWindow,
+updateTranslationsDisplay,
+updateDebugLogs,
+setTranslationStatus,
+stopPopupCheck,
+closePopupWindow,
+clearAccumulatedTranslations
 };
